@@ -60,6 +60,12 @@ COLOR_REPORTS = [
     "\x1b]12;rgb:c0c0/c0c0/c0c0\x1b\\",  # cursor colour
 ]
 
+DEVICE_ATTRIBUTES_REPORTS = [
+    "\x1b[?61;4;6;7;14;21;22;23;24;28;32;42;52c",  # Windows Terminal DA1
+    "\x1b[>0;10;1c",  # secondary DA
+    "\x1b[=1;2c",  # tertiary DA
+]
+
 
 @pytest.mark.parametrize("seq", COLOR_REPORTS)
 def test_strip_removes_osc_color_reports(seq: str) -> None:
@@ -68,6 +74,16 @@ def test_strip_removes_osc_color_reports(seq: str) -> None:
 
 def test_strip_removes_repeated_color_reports_keeping_real_key() -> None:
     report = "\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\"
+    assert filter_input(report * 5 + "\x1b[A") == "\x1b[A"
+
+
+@pytest.mark.parametrize("seq", DEVICE_ATTRIBUTES_REPORTS)
+def test_strip_removes_device_attributes_reports(seq: str) -> None:
+    assert strip_terminal_reports(seq) == ""
+
+
+def test_strip_removes_repeated_device_attributes_keeping_real_key() -> None:
+    report = DEVICE_ATTRIBUTES_REPORTS[0]
     assert filter_input(report * 5 + "\x1b[A") == "\x1b[A"
 
 
@@ -85,6 +101,18 @@ def test_parser_emits_no_keys_for_color_report() -> None:
 @pytest.mark.parametrize("split_at", range(1, len(COLOR_REPORTS[0])))
 def test_parser_buffers_color_report_across_input_chunks(split_at: int) -> None:
     report = COLOR_REPORTS[0]
+    parser = FilteringXTermParser()
+
+    assert list(parser.feed(report[:split_at])) == []
+    tokens = list(parser.feed(report[split_at:] + "\x1b[A"))
+
+    assert [t for t in tokens if isinstance(t, events.Key) and t.character] == []
+    assert any(isinstance(t, events.Key) and t.key == "up" for t in tokens)
+
+
+@pytest.mark.parametrize("split_at", range(1, len(DEVICE_ATTRIBUTES_REPORTS[0])))
+def test_parser_buffers_device_attributes_across_input_chunks(split_at: int) -> None:
+    report = DEVICE_ATTRIBUTES_REPORTS[0]
     parser = FilteringXTermParser()
 
     assert list(parser.feed(report[:split_at])) == []

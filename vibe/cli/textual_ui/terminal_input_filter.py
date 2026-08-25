@@ -1,6 +1,6 @@
 """Harden Textual's input path against malformed terminal bytes.
 
-Three defenses, applied by rebinding ``XTermParser`` in every imported
+Four defenses, applied by rebinding ``XTermParser`` in every imported
 ``textual.drivers.*`` module (``WindowsDriver`` builds the parser in
 ``textual.drivers.win32``, not its own module). Each works around a Textual
 upstream limitation; remove the corresponding defense once the linked fix ships.
@@ -26,6 +26,12 @@ upstream limitation; remove the corresponding defense once the linked fix ships.
    so the mouse silently stops tracking. Seeing an X10 report, we re-enable SGR
    mouse mode so the terminal switches back and tracking recovers.
    Upstream: https://github.com/Textualize/textual/issues/6668
+
+4. Drop terminal Device Attributes reports such as ``\x1b[?61;4;6c``. A child
+   process may write a DA query while a managed shell owns keyboard input. The
+   outer terminal's reply then arrives on Vibe's stdin, where Textual otherwise
+   decodes it as literal keys and forwards it into the child PTY. Some shells
+   echo those keys, creating a self-sustaining stream of control sequences.
 """
 
 from __future__ import annotations
@@ -52,6 +58,13 @@ _OSC_COLOR_REPORT = re.compile(r"\x1b\][0-9]{1,3};rgb:[0-9a-fA-F/]+(?:\x07|\x1b\
 _OSC_COLOR_PAYLOAD = frozenset("0123456789abcdefABCDEF/")
 _MAX_OSC_PARAMETER_DIGITS = 3
 
+# Primary, secondary, and tertiary Device Attributes replies. These are
+# terminal-generated responses, never keyboard input. Colons are permitted by
+# the CSI parameter grammar used by newer terminals.
+_DEVICE_ATTRIBUTES_REPORT = re.compile(r"\x1b\[[?>=][0-9:;]*c")
+_DEVICE_ATTRIBUTES_PREFIXES = ("\x1b[?", "\x1b[>", "\x1b[=")
+_DEVICE_ATTRIBUTES_PAYLOAD = frozenset("0123456789:;")
+
 _DRIVER_MODULE_PREFIX = "textual.drivers."
 
 _X10_MOUSE_INTRODUCER = "\x1b[M"
@@ -65,7 +78,7 @@ def strip_malformed_mouse(data: str) -> str:
 
 
 def strip_terminal_reports(data: str) -> str:
-    return _OSC_COLOR_REPORT.sub("", data)
+    return _DEVICE_ATTRIBUTES_REPORT.sub("", _OSC_COLOR_REPORT.sub("", data))
 
 
 def filter_input(data: str) -> str:
@@ -107,9 +120,24 @@ def _is_partial_color_report(payload: str) -> bool:
     return bool(color) and all(char in _OSC_COLOR_PAYLOAD for char in color)
 
 
-def _split_partial_color_report(data: str) -> tuple[str, str]:
-    start = data.rfind("\x1b]")
-    if start >= 0 and _is_partial_color_report(data[start + 2 :]):
+def _is_partial_device_attributes_report(data: str) -> bool:
+    for prefix in _DEVICE_ATTRIBUTES_PREFIXES:
+        shared_length = min(len(data), len(prefix))
+        if data[:shared_length] != prefix[:shared_length]:
+            continue
+        if len(data) <= len(prefix):
+            return True
+        return all(char in _DEVICE_ATTRIBUTES_PAYLOAD for char in data[len(prefix) :])
+    return False
+
+
+def _split_partial_terminal_report(data: str) -> tuple[str, str]:
+    starts = (
+        (data.rfind("\x1b]"), lambda value: _is_partial_color_report(value[2:])),
+        (data.rfind("\x1b["), _is_partial_device_attributes_report),
+    )
+    start, is_partial = max(starts, key=lambda candidate: candidate[0])
+    if start >= 0 and is_partial(data[start:]):
         return data[:start], data[start:]
     if data.endswith("\x1b"):
         return data[:-1], "\x1b"
@@ -120,18 +148,20 @@ class FilteringXTermParser(XTermParser):
     def __init__(self, debug: bool = False) -> None:
         super().__init__(debug)
         self._sgr_mouse_requested = False
-        self._pending_color_report = ""
+        self._pending_terminal_report = ""
 
     def feed(self, data: str) -> Iterable[Message]:
         if not data:
-            self._pending_color_report = ""
+            self._pending_terminal_report = ""
             return super().feed(data)
 
         self._maybe_restore_sgr_mouse(data)
-        data = self._pending_color_report + data
-        self._pending_color_report = ""
+        data = self._pending_terminal_report + data
+        self._pending_terminal_report = ""
         filtered = filter_input(data)
-        filtered, self._pending_color_report = _split_partial_color_report(filtered)
+        filtered, self._pending_terminal_report = _split_partial_terminal_report(
+            filtered
+        )
         # An empty `data` is the driver's EOF signal and must reach the base
         # parser. But if a non-empty chunk was *entirely* noise, feeding the
         # resulting "" would wrongly trip EOF, so we yield nothing instead.

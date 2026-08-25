@@ -71,7 +71,12 @@ class TestAgentProfile:
     def test_advisor_and_reviewer_are_read_only(self) -> None:
         for profile in (GOAL_ADVISOR, REVIEWER):
             assert profile.safety is AgentSafety.SAFE
-            assert profile.overrides["enabled_tools"] == ["grep", "read_file", "skill"]
+            assert profile.overrides["enabled_tools"] == [
+                "grep",
+                "read_file",
+                "skill",
+                "web_search",
+            ]
 
     def test_worker_only_auto_approves_file_mutations(self) -> None:
         assert WORKER.safety is AgentSafety.DESTRUCTIVE
@@ -211,7 +216,12 @@ class TestAgentManager:
 
         assert manager.config.get_active_model().alias == expected_alias
         assert manager.config.system_prompt_id in {"advisor", "reviewer"}
-        assert manager.config.enabled_tools == ["grep", "read_file", "skill"]
+        assert manager.config.enabled_tools == [
+            "grep",
+            "read_file",
+            "skill",
+            "web_search",
+        ]
 
     def test_autonomous_profile_preserves_configured_autonomy_settings(
         self,

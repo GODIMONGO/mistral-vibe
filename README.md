@@ -243,6 +243,25 @@ the agent must never enter passwords, API keys, payment details, or other secret
 Worker subagents do not receive this tool; the root agent owns the single local
 mouse and keyboard.
 
+### Web Search
+
+The built-in `web_search` tool can use Mistral's hosted search or a bounded public
+fallback that needs no separate API key. In `auto` mode Vibe tries Mistral when a
+credential is available and falls back on rate limits or service errors. Autonomous
+`explore`, advisor, reviewer, and worker subagents can use the same tool.
+
+```toml
+[tools.web_search]
+permission = "ask"
+engine = "auto" # auto | mistral | public
+timeout = 30
+max_results = 5 # 1-10
+```
+
+Use `engine = "public"` for OAuth-only/no-key operation without spending hosted
+search tokens. Public responses are capped at 512 KiB and results are bounded by
+`max_results` to limit memory and context use.
+
 ### Interactive User Questions
 
 The `ask_user_question` tool allows the agent to ask you clarifying questions during its work. This enables more interactive and collaborative workflows.

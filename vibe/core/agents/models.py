@@ -107,7 +107,7 @@ EXPLORE = AgentProfile(
     safety=AgentSafety.SAFE,
     agent_type=AgentType.SUBAGENT,
     overrides={
-        "enabled_tools": ["grep", "read_file", "skill"],
+        "enabled_tools": ["grep", "read_file", "skill", "web_search"],
         "system_prompt_id": "explore",
     },
 )
@@ -139,7 +139,7 @@ GOAL_ADVISOR = AgentProfile(
     safety=AgentSafety.SAFE,
     agent_type=AgentType.SUBAGENT,
     overrides={
-        "enabled_tools": ["grep", "read_file", "skill"],
+        "enabled_tools": ["grep", "read_file", "skill", "web_search"],
         "system_prompt_id": "advisor",
     },
 )
@@ -151,7 +151,7 @@ REVIEWER = AgentProfile(
     safety=AgentSafety.SAFE,
     agent_type=AgentType.SUBAGENT,
     overrides={
-        "enabled_tools": ["grep", "read_file", "skill"],
+        "enabled_tools": ["grep", "read_file", "skill", "web_search"],
         "system_prompt_id": "reviewer",
     },
 )
@@ -170,6 +170,7 @@ WORKER = AgentProfile(
             "read_file",
             "skill",
             "todo",
+            "web_search",
             "write_file",
         ],
         "system_prompt_id": "worker",

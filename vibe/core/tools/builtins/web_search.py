@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, final
+from dataclasses import dataclass
+from html.parser import HTMLParser
+from typing import TYPE_CHECKING, Literal, final
+from urllib.parse import parse_qs, urlparse
 
+import httpx
 from pydantic import BaseModel, Field
 
 from vibe.core.config import DEFAULT_MISTRAL_API_ENV_KEY, VibeConfigSchema
@@ -33,28 +37,105 @@ if TYPE_CHECKING:
     from vibe.core.types import ToolCallEvent, ToolResultEvent
 
 
+_PUBLIC_SEARCH_URL = "https://html.duckduckgo.com/html/"
+_MAX_PUBLIC_RESPONSE_BYTES = 512_000
+_MAX_TITLE_CHARS = 240
+_MAX_SNIPPET_CHARS = 600
+
+
+@dataclass
+class _PublicSearchHit:
+    title: str
+    url: str
+    snippet: str = ""
+
+
+class _PublicSearchParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.hits: list[_PublicSearchHit] = []
+        self._kind = ""
+        self._href = ""
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "a" or self._kind:
+            return
+        values = dict(attrs)
+        classes = set((values.get("class") or "").split())
+        if "result__a" in classes:
+            self._kind = "result"
+        elif "result__snippet" in classes:
+            self._kind = "snippet"
+        else:
+            return
+        self._href = values.get("href") or ""
+        self._parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._kind:
+            self._parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "a" or not self._kind:
+            return
+        text = " ".join("".join(self._parts).split())
+        if self._kind == "result":
+            url = _unwrap_public_result_url(self._href)
+            if text and url:
+                self.hits.append(
+                    _PublicSearchHit(title=text[:_MAX_TITLE_CHARS], url=url)
+                )
+        elif text and self.hits:
+            self.hits[-1].snippet = text[:_MAX_SNIPPET_CHARS]
+        self._kind = ""
+        self._href = ""
+        self._parts = []
+
+
+def _unwrap_public_result_url(raw_url: str) -> str:
+    url = f"https:{raw_url}" if raw_url.startswith("//") else raw_url
+    parsed = urlparse(url)
+    if parsed.hostname and parsed.hostname.endswith("duckduckgo.com"):
+        target = parse_qs(parsed.query).get("uddg", [])
+        if target:
+            url = target[0]
+            parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return url
+
+
 class WebSearchSource(BaseModel):
     title: str
     url: str
 
 
 class WebSearchArgs(BaseModel):
-    query: str = Field(min_length=1, description="The search query")
+    query: str = Field(min_length=1, max_length=500, description="The search query")
 
 
 class WebSearchResult(BaseModel):
     query: str
     answer: str
     sources: list[WebSearchSource] = Field(default_factory=list)
+    engine: Literal["mistral", "public"] = "mistral"
 
 
 class WebSearchConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ASK
-    timeout: int = Field(default=120, description="HTTP timeout in seconds.")
+    timeout: int = Field(
+        default=120, ge=1, le=120, description="HTTP timeout in seconds."
+    )
     model: str = Field(
         default="mistral-vibe-cli-with-tools",
         description="Mistral model to use for web search.",
     )
+    engine: Literal["auto", "mistral", "public"] = Field(
+        default="auto",
+        description="Search engine: Mistral, public no-key fallback, or automatic.",
+    )
+    max_results: int = Field(default=5, ge=1, le=10)
 
 
 class WebSearch(
@@ -65,29 +146,50 @@ class WebSearch(
 
     @classmethod
     def is_available(cls, config: VibeConfigSchema | None = None) -> bool:
-        if config is None:
-            return bool(resolve_api_key(DEFAULT_MISTRAL_API_ENV_KEY))
-
-        provider = config.get_mistral_provider()
-        if provider is None:
-            return bool(resolve_api_key(DEFAULT_MISTRAL_API_ENV_KEY))
-
-        return bool(resolve_api_key(cls._api_key_env_var(config)))
+        return True
 
     @final
     async def run(
         self, args: WebSearchArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | WebSearchResult, None]:
-        # Imported on first use: the mistralai SDK is heavy and would
-        # otherwise load at CLI startup when the tool registry imports us.
-        from mistralai.client import Mistral
-        from mistralai.client.errors import SDKError
+        if self.config.engine == "public":
+            yield await self._run_public_search(args.query)
+            return
 
         config = self._resolve_config(ctx)
         api_key_env_var = self._api_key_env_var(config)
         api_key = resolve_api_key(api_key_env_var)
-        if not api_key:
-            raise ToolError(f"{api_key_env_var} environment variable not set.")
+        if self.config.engine == "mistral":
+            if not api_key:
+                raise ToolError(f"{api_key_env_var} credential not available.")
+            yield await self._run_mistral_search(args.query, api_key, ctx)
+            return
+
+        mistral_error: ToolError | None = None
+        if api_key:
+            try:
+                yield await self._run_mistral_search(args.query, api_key, ctx)
+                return
+            except ToolError as exc:
+                mistral_error = exc
+
+        try:
+            yield await self._run_public_search(args.query)
+        except ToolError as public_error:
+            if mistral_error is None:
+                raise
+            raise ToolError(
+                f"Mistral search failed ({mistral_error}); public fallback failed "
+                f"({public_error})."
+            ) from public_error
+
+    async def _run_mistral_search(
+        self, query: str, api_key: str, ctx: InvokeContext | None
+    ) -> WebSearchResult:
+        # Imported on first use: the mistralai SDK is heavy and would
+        # otherwise load at CLI startup when the tool registry imports us.
+        from mistralai.client import Mistral
+        from mistralai.client.errors import SDKError
 
         ssl_context = build_ssl_context()
         async_http_client = VibeAsyncHTTPClient(
@@ -111,18 +213,66 @@ class WebSearch(
                     model=self.config.model,
                     instructions="Always use the web_search tool to answer queries. Never answer from memory alone.",
                     tools=[{"type": "web_search"}],
-                    inputs=args.query,
+                    inputs=query,
                     store=False,
                     metadata=metadata,
                     http_headers={"user-agent": get_user_agent(Backend.MISTRAL)},
                 )
 
-                yield self._parse_response(response, args.query)
+                return self._parse_response(response, query)
 
         except SDKError as exc:
             raise ToolError(f"Mistral API error: {exc}") from exc
         finally:
             await async_http_client.aclose()
+
+    async def _run_public_search(self, query: str) -> WebSearchResult:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        try:
+            async with VibeAsyncHTTPClient(
+                follow_redirects=True,
+                timeout=httpx.Timeout(self.config.timeout),
+                verify=build_ssl_context(),
+            ) as client:
+                async with client.stream(
+                    "GET", _PUBLIC_SEARCH_URL, params={"q": query}, headers=headers
+                ) as response:
+                    response.raise_for_status()
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        remaining = _MAX_PUBLIC_RESPONSE_BYTES - len(body)
+                        if remaining <= 0:
+                            break
+                        body.extend(chunk[:remaining])
+        except httpx.TimeoutException as exc:
+            raise ToolError(
+                f"Public web search timed out after {self.config.timeout} seconds."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ToolError(f"Public web search failed: {exc}") from exc
+
+        parser = _PublicSearchParser()
+        parser.feed(body.decode("utf-8", errors="replace"))
+        hits = parser.hits[: self.config.max_results]
+        if not hits:
+            raise ToolError("Public web search returned no results.")
+
+        sources = [WebSearchSource(title=hit.title, url=hit.url) for hit in hits]
+        answer = "\n\n".join(
+            f"{index}. {hit.title}\nURL: {hit.url}"
+            + (f"\nSnippet: {hit.snippet}" if hit.snippet else "")
+            for index, hit in enumerate(hits, start=1)
+        )
+        return WebSearchResult(
+            query=query, answer=answer, sources=sources, engine="public"
+        )
 
     def _resolve_server_url(self, ctx: InvokeContext | None) -> str | None:
         config = self._resolve_config(ctx)

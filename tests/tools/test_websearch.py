@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from mistralai.client import Mistral
 from mistralai.client.errors import SDKError
 from mistralai.client.models import (
@@ -13,6 +14,7 @@ from mistralai.client.models import (
     ToolReferenceChunk,
 )
 import pytest
+import respx
 
 from tests.conftest import build_test_vibe_config
 from tests.mock.utils import collect_result
@@ -79,7 +81,7 @@ def _make_response(
 @pytest.fixture
 def websearch(monkeypatch):
     monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-    config = WebSearchConfig()
+    config = WebSearchConfig(engine="mistral")
     return WebSearch(config_getter=lambda: config, state=BaseToolState())
 
 
@@ -154,17 +156,68 @@ def test_parse_skips_non_message_entries(websearch):
 @pytest.mark.asyncio
 async def test_run_missing_api_key(monkeypatch):
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
-    config = WebSearchConfig()
+    config = WebSearchConfig(engine="mistral")
     ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
     with pytest.raises(ToolError, match="MISTRAL_API_KEY"):
         await collect_result(ws.run(WebSearchArgs(query="test")))
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_public_search_works_without_api_key(monkeypatch):
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    html = """
+    <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs&amp;rut=x">Example <b>Docs</b></a>
+    <a class="result__snippet">Current documentation snippet.</a>
+    <a class="result__a" href="https://second.example.org/page">Second result</a>
+    <a class="result__snippet">Second snippet.</a>
+    """
+    respx.get("https://html.duckduckgo.com/html/").mock(
+        return_value=httpx.Response(200, text=html)
+    )
+    config = WebSearchConfig(engine="public", max_results=2)
+    tool = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    result = await collect_result(tool.run(WebSearchArgs(query="current docs")))
+
+    assert result.engine == "public"
+    assert [source.url for source in result.sources] == [
+        "https://example.com/docs",
+        "https://second.example.org/page",
+    ]
+    assert "Current documentation snippet." in result.answer
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_auto_search_falls_back_when_mistral_is_rate_limited(monkeypatch):
+    monkeypatch.setenv("MISTRAL_API_KEY", "oauth-credential")
+    html = (
+        '<a class="result__a" href="https://example.com/current">Current result</a>'
+        '<a class="result__snippet">Fresh public result.</a>'
+    )
+    respx.get("https://html.duckduckgo.com/html/").mock(
+        return_value=httpx.Response(200, text=html)
+    )
+    config = WebSearchConfig(engine="auto")
+    tool = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    with patch.object(
+        tool,
+        "_run_mistral_search",
+        AsyncMock(side_effect=ToolError("429 Token rate limit reached")),
+    ):
+        result = await collect_result(tool.run(WebSearchArgs(query="latest info")))
+
+    assert result.engine == "public"
+    assert result.sources[0].url == "https://example.com/current"
+
+
+@pytest.mark.asyncio
 async def test_run_uses_mistral_provider_api_key_env_var(monkeypatch):
     monkeypatch.setenv("MISTRAL_API_KEY", "wrong-key")
     monkeypatch.setenv("TEST_API_KEY", "provider-key")
-    config = WebSearchConfig()
+    config = WebSearchConfig(engine="mistral")
     ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
     ctx = _ctx_with_config(
         build_test_vibe_config(providers=[_mistral_provider("TEST_API_KEY")])
@@ -215,7 +268,7 @@ async def test_run_reports_configured_api_key_env_var_when_missing(monkeypatch):
         build_test_vibe_config(providers=[_mistral_provider("TEST_API_KEY")])
     )
     monkeypatch.delenv("TEST_API_KEY", raising=False)
-    config = WebSearchConfig()
+    config = WebSearchConfig(engine="mistral")
     ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
 
     with pytest.raises(ToolError, match="TEST_API_KEY"):
@@ -306,7 +359,7 @@ def test_is_available_with_key(monkeypatch):
 
 def test_is_available_without_key(monkeypatch):
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
-    assert WebSearch.is_available() is False
+    assert WebSearch.is_available() is True
 
 
 def test_is_available_uses_mistral_provider_api_key_env_var(monkeypatch):
@@ -315,7 +368,7 @@ def test_is_available_uses_mistral_provider_api_key_env_var(monkeypatch):
     config = build_test_vibe_config(providers=[_mistral_provider("TEST_API_KEY")])
     monkeypatch.delenv("TEST_API_KEY", raising=False)
 
-    assert WebSearch.is_available(config) is False
+    assert WebSearch.is_available(config) is True
 
     monkeypatch.setenv("TEST_API_KEY", "provider-key")
     assert WebSearch.is_available(config) is True
@@ -329,7 +382,7 @@ def test_is_available_uses_non_active_mistral_provider(monkeypatch):
     )
     monkeypatch.delenv("TEST_API_KEY", raising=False)
 
-    assert WebSearch.is_available(config) is False
+    assert WebSearch.is_available(config) is True
 
     monkeypatch.setenv("TEST_API_KEY", "provider-key")
     assert WebSearch.is_available(config) is True
@@ -347,7 +400,7 @@ def test_is_available_falls_back_to_default_api_key_env_var_without_mistral_prov
 
     monkeypatch.delenv("MISTRAL_API_KEY")
 
-    assert WebSearch.is_available(config) is False
+    assert WebSearch.is_available(config) is True
 
 
 def test_is_available_falls_back_to_default_api_key_env_var_when_provider_env_var_empty(
@@ -360,7 +413,7 @@ def test_is_available_falls_back_to_default_api_key_env_var_when_provider_env_va
 
     monkeypatch.delenv("MISTRAL_API_KEY")
 
-    assert WebSearch.is_available(config) is False
+    assert WebSearch.is_available(config) is True
 
 
 def test_tool_manager_websearch_availability_uses_provider_api_key_env_var(monkeypatch):
@@ -372,7 +425,7 @@ def test_tool_manager_websearch_availability_uses_provider_api_key_env_var(monke
     assert "web_search" in manager.available_tools
 
     monkeypatch.delenv("TEST_API_KEY")
-    assert "web_search" not in manager.available_tools
+    assert "web_search" in manager.available_tools
 
 
 def test_tool_manager_websearch_availability_falls_back_without_mistral_provider(
@@ -387,7 +440,7 @@ def test_tool_manager_websearch_availability_falls_back_without_mistral_provider
     assert "web_search" in manager.available_tools
 
     monkeypatch.delenv("MISTRAL_API_KEY")
-    assert "web_search" not in manager.available_tools
+    assert "web_search" in manager.available_tools
 
 
 def test_get_status_text():

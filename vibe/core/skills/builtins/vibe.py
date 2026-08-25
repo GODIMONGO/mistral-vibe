@@ -324,7 +324,19 @@ shell = "C:\\Program Files\\Git\\bin\\bash.exe"
 [tools.powershell]
 permission = "ask"
 shell = "powershell.exe"
+
+[tools.web_search]
+permission = "ask"
+engine = "auto"                   # "auto", "mistral", or no-key "public"
+timeout = 30
+max_results = 5                   # 1-10; public response body is capped
 ```
+
+`web_search` is available without a separate API key through the bounded public
+engine. `auto` tries hosted Mistral search when credentials are available and falls
+back to public search on quota, rate-limit, or service errors. Autonomous explore,
+advisor, reviewer, and worker profiles include the tool. Use `engine = "public"`
+to avoid hosted search token usage entirely.
 
 The built-in shell surface is controlled by the `managed_shell_tools_enabled` config
 field and the `vibe_cli_managed_shell_tools` GrowthBook experiment. The default variant

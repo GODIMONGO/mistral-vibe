@@ -101,7 +101,7 @@ def test_explore_profile_restricts_tools_and_prompt(
     orchestrator: ConfigOrchestrator[VibeConfigSchema], base: dict[str, Any]
 ) -> None:
     delta = _merged_delta(orchestrator, base, "explore")
-    assert delta["enabled_tools"] == [[], ["grep", "read_file", "skill"]]
+    assert delta["enabled_tools"] == [[], ["grep", "read_file", "skill", "web_search"]]
     assert delta["system_prompt_id"][1] == "explore"
     assert set(delta) == {"enabled_tools", "system_prompt_id"}
 

@@ -555,7 +555,7 @@ def test_autonomy_aggressiveness_controls_resource_policy(
     [
         ("max_review_retries", 0),
         ("max_review_retries", 11),
-        ("max_parallel_subagents", 0),
+        ("max_parallel_subagents", -1),
         ("max_parallel_subagents", 17),
         ("max_live_child_runtimes", 0),
         ("max_live_child_runtimes", 65),
@@ -565,6 +565,12 @@ def test_autonomy_aggressiveness_controls_resource_policy(
 def test_autonomy_limits_are_validated(field: str, value: int) -> None:
     with pytest.raises(ValidationError):
         AutonomyConfig.model_validate({field: value})
+
+
+def test_zero_parallel_subagents_disables_subagent_capacity() -> None:
+    autonomy = AutonomyConfig(max_parallel_subagents=0)
+
+    assert autonomy.effective_parallel_subagents == 0
 
 
 def test_autonomy_model_resolution_fallbacks() -> None:

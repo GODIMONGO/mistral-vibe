@@ -43,6 +43,27 @@ async def test_config_updates_refresh_the_public_runtime_tool_catalog(
 
 
 @pytest.mark.asyncio
+async def test_effort_updates_thinking_and_independent_subagent_limit(
+    backend_contract_session: AppServerSession,
+) -> None:
+    config = backend_contract_session.resources.config
+
+    await config.set_effort("off", 0)
+
+    assert config.current.active_model.thinking == "off"
+    assert config.current.autonomy.max_parallel_subagents == 0
+    assert config.current.autonomy.aggressiveness == "low"
+    assert config.current.autonomy.enabled is False
+
+    await config.set_effort("max", 16)
+
+    assert config.current.active_model.thinking == "max"
+    assert config.current.autonomy.max_parallel_subagents == 16
+    assert config.current.autonomy.aggressiveness == "max"
+    assert config.current.autonomy.enabled is True
+
+
+@pytest.mark.asyncio
 async def test_config_subscribers_observe_updates_until_unsubscribed(
     backend_contract_session: AppServerSession,
 ) -> None:

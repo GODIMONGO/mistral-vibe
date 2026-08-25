@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from vibe.app_server._model import ProtocolModel
 from vibe.config_values import (
+    MAX_PARALLEL_SUBAGENTS as MAX_PARALLEL_SUBAGENTS,
+    MIN_PARALLEL_SUBAGENTS as MIN_PARALLEL_SUBAGENTS,
     THINKING_LEVELS as THINKING_LEVELS,
     AudioClient,
     SpeechOutputFormat,

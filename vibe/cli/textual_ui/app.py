@@ -33,6 +33,7 @@ from textual.worker import Worker, WorkerFailed, WorkerState
 from vibe import __version__ as CORE_VERSION
 from vibe.app_server import AppServerHost, AppServerSession, SessionExitSummary
 from vibe.app_server.config import (
+    MAX_PARALLEL_SUBAGENTS,
     THINKING_LEVELS,
     ConfigView,
     ModelConfigView,
@@ -160,6 +161,7 @@ from vibe.cli.textual_ui.widgets.collapsible import CollapsibleSection
 from vibe.cli.textual_ui.widgets.compact import CompactMessage
 from vibe.cli.textual_ui.widgets.context_progress import ContextProgress, TokenState
 from vibe.cli.textual_ui.widgets.debug_console import DebugConsole
+from vibe.cli.textual_ui.widgets.effort_picker import EffortPickerApp
 from vibe.cli.textual_ui.widgets.feedback_bar import FeedbackBar
 from vibe.cli.textual_ui.widgets.inline_notice import InlineNotice
 from vibe.cli.textual_ui.widgets.load_more import HistoryLoadMoreRequested
@@ -346,6 +348,7 @@ class BottomApp(StrEnum):
     Approval = auto()
     ApiKey = auto()
     ConnectorAuth = auto()
+    EffortPicker = auto()
     Input = auto()
     LogLevelPicker = auto()
     MCP = auto()
@@ -365,6 +368,7 @@ class BottomApp(StrEnum):
 # Smooth per-notch wheel scroll duration. Kept short so consecutive notches chain
 # into continuous motion at the same average speed as an instant jump.
 WHEEL_SCROLL_DURATION = 0.1
+_EFFORT_MAX_ARGS = 2
 
 
 class ChatScroll(VerticalScroll):
@@ -1992,14 +1996,21 @@ class VibeApp(App):  # noqa: PLR0904
             self._pending_thinking = None
 
     async def _persist_effort(
-        self, level: ThinkingLevel, *, announce: bool = True
+        self,
+        level: ThinkingLevel,
+        max_parallel_subagents: int,
+        *,
+        ultracode: bool = False,
+        announce: bool = True,
     ) -> None:
-        await self.app_server.resources.config.set_effort(level)
+        await self.app_server.resources.config.set_effort(level, max_parallel_subagents)
         if announce:
+            mode = "UltraCode" if ultracode else "Effort"
             await self._mount_and_scroll(
                 UserCommandMessage(
-                    f"Effort set to **{level}**. Main, advisor, and reviewer "
-                    "thinking plus autonomous subagent intensity were updated."
+                    f"{mode} applied: thinking **{level}**, subagents "
+                    f"**{max_parallel_subagents}/{MAX_PARALLEL_SUBAGENTS}**. "
+                    "Main, advisor, and reviewer thinking were updated together."
                 )
             )
 
@@ -2008,6 +2019,25 @@ class VibeApp(App):  # noqa: PLR0904
 
     async def on_thinking_picker_app_cancelled(
         self, _event: ThinkingPickerApp.Cancelled
+    ) -> None:
+        await self._switch_to_input_app()
+
+    async def on_effort_picker_app_applied(
+        self, message: EffortPickerApp.Applied
+    ) -> None:
+        await self._queue.enqueue_command(
+            f"effort {message.thinking} {message.max_parallel_subagents}",
+            command_payload=partial(
+                self._persist_effort,
+                message.thinking,
+                message.max_parallel_subagents,
+                ultracode=message.ultracode,
+            ),
+        )
+        await self._switch_to_input_app()
+
+    async def on_effort_picker_app_cancelled(
+        self, _event: EffortPickerApp.Cancelled
     ) -> None:
         await self._switch_to_input_app()
 
@@ -3511,30 +3541,49 @@ class VibeApp(App):  # noqa: PLR0904
         await self._switch_to_thinking_picker_app()
 
     async def _effort_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
-        raw_level = cmd_args.strip().lower()
-        if not raw_level:
-            autonomy = self.config.autonomy
-            await self._mount_and_scroll(
-                UserCommandMessage(
-                    "## Effort\n\n"
-                    f"- **Thinking**: {self.config.active_model.thinking}\n"
-                    f"- **Autonomy**: {autonomy.aggressiveness}\n"
-                    f"- **Subagent cap**: {autonomy.max_parallel_subagents}\n\n"
-                    "Use `/effort off|low|medium|high|max`."
-                )
+        parts = cmd_args.strip().lower().split()
+        if not parts:
+            await self._switch_to_effort_picker_app()
+            return
+        if parts == ["ultra"]:
+            await self._queue.enqueue_command(
+                "effort ultra",
+                command_payload=partial(
+                    self._persist_effort,
+                    cast(ThinkingLevel, "max"),
+                    MAX_PARALLEL_SUBAGENTS,
+                    ultracode=True,
+                ),
             )
             return
-        if raw_level not in THINKING_LEVELS:
+        if len(parts) > _EFFORT_MAX_ARGS or parts[0] not in THINKING_LEVELS:
             await self._mount_and_scroll(
                 ErrorMessage(
-                    "Usage: /effort off|low|medium|high|max",
+                    "Usage: /effort [off|low|medium|high|max] [0-16]",
                     collapsed=self._tools_collapsed,
                 )
             )
             return
-        level = cast(ThinkingLevel, raw_level)
+        level = cast(ThinkingLevel, parts[0])
+        max_parallel_subagents = self.config.autonomy.max_parallel_subagents
+        if len(parts) == _EFFORT_MAX_ARGS:
+            try:
+                max_parallel_subagents = int(parts[1])
+            except ValueError:
+                max_parallel_subagents = -1
+        if not 0 <= max_parallel_subagents <= MAX_PARALLEL_SUBAGENTS:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "Subagent limit must be between 0 and 16.",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
         await self._queue.enqueue_command(
-            f"effort {level}", command_payload=partial(self._persist_effort, level)
+            f"effort {level} {max_parallel_subagents}",
+            command_payload=partial(
+                self._persist_effort, level, max_parallel_subagents
+            ),
         )
 
     async def _show_theme(self, **kwargs: Any) -> None:
@@ -4072,19 +4121,20 @@ class VibeApp(App):  # noqa: PLR0904
 
     async def _ultracode_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
         if not cmd_args.strip():
-            await self._mount_and_scroll(
-                ErrorMessage(
-                    "Usage: /ultracode <objective>", collapsed=self._tools_collapsed
-                )
-            )
+            await self._switch_to_effort_picker_app(ultracode=True)
             return
-        await self._persist_effort(cast(ThinkingLevel, "max"), announce=False)
+        await self._persist_effort(
+            cast(ThinkingLevel, "max"),
+            MAX_PARALLEL_SUBAGENTS,
+            ultracode=True,
+            announce=False,
+        )
         await self._run_feature_goal(
             cmd_args,
             usage="Usage: /ultracode <objective>",
             instruction=(
                 "Ultracode mode is active. Make a compact dependency plan immediately. "
-                "Delegate independent inspection and verification to a small bounded "
+                "Delegate independent inspection and verification to a maximum bounded "
                 "swarm, serialize mutating work, integrate results at root, run decisive "
                 "checks, and require an evidence-backed reviewer verdict before completion."
             ),
@@ -4454,6 +4504,20 @@ class VibeApp(App):  # noqa: PLR0904
             )
         )
 
+    async def _switch_to_effort_picker_app(self, *, ultracode: bool = False) -> None:
+        if self._current_bottom_app == BottomApp.EffortPicker:
+            return
+
+        await self._switch_from_input(
+            EffortPickerApp(
+                current_thinking=self._effective_thinking,
+                current_max_parallel_subagents=(
+                    self.config.autonomy.max_parallel_subagents
+                ),
+                initial_row=2 if ultracode else 0,
+            )
+        )
+
     async def _switch_to_log_level_picker_app(self) -> None:
         if self._current_bottom_app == BottomApp.LogLevelPicker:
             return
@@ -4532,6 +4596,7 @@ class VibeApp(App):  # noqa: PLR0904
     def _focus_current_bottom_app(self) -> None:
         focus_widget_by_app: dict[BottomApp, type[Widget]] = {
             BottomApp.ApiKey: ApiKeyApp,
+            BottomApp.EffortPicker: EffortPickerApp,
             BottomApp.LogLevelPicker: LogLevelPickerApp,
             BottomApp.ModelPicker: ModelPickerApp,
             BottomApp.ThemePicker: ThemePickerApp,
@@ -4618,6 +4683,14 @@ class VibeApp(App):  # noqa: PLR0904
         try:
             thinking_picker = self.query_one(ThinkingPickerApp)
             thinking_picker.post_message(ThinkingPickerApp.Cancelled())
+        except Exception:
+            pass
+        self._last_escape_time = None
+
+    def _handle_effort_picker_app_escape(self) -> None:
+        try:
+            effort_picker = self.query_one(EffortPickerApp)
+            effort_picker.post_message(EffortPickerApp.Cancelled())
         except Exception:
             pass
         self._last_escape_time = None
@@ -4908,6 +4981,7 @@ class VibeApp(App):  # noqa: PLR0904
             BottomApp.ModelPicker: self._handle_model_picker_app_escape,
             BottomApp.ThemePicker: self._handle_theme_picker_app_escape,
             BottomApp.ThinkingPicker: self._handle_thinking_picker_app_escape,
+            BottomApp.EffortPicker: self._handle_effort_picker_app_escape,
             BottomApp.VibeCodeProjectCreate: self._handle_vibe_code_project_create_app_escape,
             BottomApp.VibeCodeProjectPicker: (
                 self._handle_vibe_code_project_picker_app_escape

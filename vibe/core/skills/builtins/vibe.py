@@ -178,7 +178,7 @@ aggressiveness = "medium"         # low | medium | high | max
 goal_advisor_model = ""           # Empty means the active model
 reviewer_model = ""               # Empty means advisor, then active model
 max_review_retries = 3
-max_parallel_subagents = 4
+max_parallel_subagents = 4        # 0 disables subagents; maximum 16
 max_live_child_runtimes = 8
 max_subagent_result_chars = 32768
 require_worker = true
@@ -832,10 +832,13 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/config` - Full-screen settings browser. Fields show their value and origin layer (default / TOML / env / override). Type to filter, arrows to move, Enter to edit; booleans toggle, closed-set fields (theme, models) pick from a list, scalars edit inline, complex fields open a JSON editor. The edit modal shows an inspector of the layers setting the field; edits persist to the TOML layer by default, `Tab` targets the ephemeral session override (until restart), and `Ctrl+R` clears the field one writable layer at a time toward the default. The `tools` field opens a grouped tool list with a per-tool config editor (permission, allow/deny lists, `Ctrl+E` for raw JSON). Enabling/disabling whole MCP servers or connectors stays in `/mcp`.
 - `/model` - Select active model
 - `/thinking` - Select thinking level
-- `/effort off|low|medium|high|max` - Set main/advisor/reviewer thinking and
-  autonomous subagent intensity.
+- `/effort` - Open the slider panel for independent thinking (`off` to `max`)
+  and subagent-limit (`0` to `16`) selection. Direct form:
+  `/effort LEVEL [0-16]`. The UltraCode row sets every model role to max,
+  enables autonomy, and selects 16 subagents.
 - `/subagents` - Show active and recent child-agent tasks.
-- `/ultracode <objective>` - Use max effort and a small bounded swarm.
+- `/ultracode [objective]` - Open the UltraCode preset or run a difficult
+  objective with max thinking and the maximum bounded swarm.
 - `/pc <objective>` - Run a root-owned computer-control objective.
 - `/browser <objective>` - Run a Chrome CDP/browser-control objective.
 - `/web <objective>` - Run an evidence-backed web-engineering objective.

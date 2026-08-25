@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from textual.widgets import OptionList
+from textual.widgets import OptionList, Static
 
 from tests.conftest import build_test_vibe_app, build_test_vibe_config
 from vibe.app_server.config import THINKING_LEVELS
@@ -14,6 +14,7 @@ from vibe.app_server.protocol import (
     ConfigLayerValueWire,
 )
 from vibe.cli.textual_ui.app import BottomApp
+from vibe.cli.textual_ui.widgets.effort_picker import EffortPickerApp
 from vibe.cli.textual_ui.widgets.model_picker import ModelPickerApp
 from vibe.cli.textual_ui.widgets.thinking_picker import ThinkingPickerApp
 from vibe.core.config import ModelConfig
@@ -386,4 +387,106 @@ async def test_effort_command_persists_model_and_subagent_intensity() -> None:
             await app._effort_command("max")
             await pilot.pause(0.2)
 
-        set_effort.assert_awaited_once_with("max")
+        set_effort.assert_awaited_once_with("max", 4)
+
+
+@pytest.mark.asyncio
+async def test_effort_command_accepts_independent_direct_values() -> None:
+    app = build_test_vibe_app(config=_make_config_with_models())
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        with patch.object(
+            app.app_server.resources.config, "set_effort", new=AsyncMock()
+        ) as set_effort:
+            await app._effort_command("low 12")
+            await pilot.pause(0.2)
+
+        set_effort.assert_awaited_once_with("low", 12)
+
+
+@pytest.mark.asyncio
+async def test_effort_command_opens_slider_picker() -> None:
+    app = build_test_vibe_app(config=_make_config_with_models())
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        await app._effort_command()
+        await pilot.pause(0.2)
+
+        assert app._current_bottom_app == BottomApp.EffortPicker
+        picker = app.query_one(EffortPickerApp)
+        assert "Thinking" in str(
+            picker.query_one("#effortpicker-thinking", Static).render()
+        )
+        assert "4/16" in str(
+            picker.query_one("#effortpicker-subagents", Static).render()
+        )
+        assert "UltraCode" in str(
+            picker.query_one("#effortpicker-ultracode", Static).render()
+        )
+
+
+@pytest.mark.asyncio
+async def test_effort_picker_escape_returns_to_input() -> None:
+    app = build_test_vibe_app(config=_make_config_with_models())
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        await app._effort_command()
+        await pilot.pause(0.2)
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+
+        assert app._current_bottom_app == BottomApp.Input
+        assert len(app.query(EffortPickerApp)) == 0
+
+
+@pytest.mark.asyncio
+async def test_effort_picker_applies_independent_minimums() -> None:
+    app = build_test_vibe_app(config=_make_config_with_models())
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        await app._effort_command()
+        await pilot.pause(0.2)
+        await pilot.press("down", "left", "left", "left", "left")
+        with patch.object(
+            app.app_server.resources.config, "set_effort", new=AsyncMock()
+        ) as set_effort:
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+
+        set_effort.assert_awaited_once_with("off", 0)
+
+
+@pytest.mark.asyncio
+async def test_effort_picker_ultracode_sets_everything_to_maximum() -> None:
+    app = build_test_vibe_app(config=_make_config_with_models())
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        await app._effort_command()
+        await pilot.pause(0.2)
+        with patch.object(
+            app.app_server.resources.config, "set_effort", new=AsyncMock()
+        ) as set_effort:
+            await pilot.press("u")
+            await pilot.pause(0.2)
+
+        set_effort.assert_awaited_once_with("max", 16)
+
+
+@pytest.mark.asyncio
+async def test_ultracode_without_objective_opens_shared_effort_picker() -> None:
+    app = build_test_vibe_app(config=_make_config_with_models())
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        await app._ultracode_command()
+        await pilot.pause(0.2)
+
+        assert app._current_bottom_app == BottomApp.EffortPicker
+        picker = app.query_one(EffortPickerApp)
+        assert "› UltraCode" in str(
+            picker.query_one("#effortpicker-ultracode", Static).render()
+        )

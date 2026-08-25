@@ -118,3 +118,22 @@ async def test_swarm_enforces_task_count(swarm_ctx: InvokeContext) -> None:
                 SwarmArgs(tasks=[TaskArgs(task="one"), TaskArgs(task="two")]), swarm_ctx
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_zero_effort_disables_swarm(
+    swarm_tool: Swarm,
+    swarm_ctx: InvokeContext,
+    build_config: ConfigBuilder,
+    load_orchestrator: OrchestratorLoader[VibeConfigSchema],
+) -> None:
+    swarm_ctx.agent_manager = AgentManager(
+        load_orchestrator(build_config(autonomy={"max_parallel_subagents": 0}))
+    )
+
+    with pytest.raises(ToolError, match="Subagents are disabled"):
+        await collect_result(
+            swarm_tool.run(
+                SwarmArgs(tasks=[TaskArgs(task="inspect", agent="explore")]), swarm_ctx
+            )
+        )

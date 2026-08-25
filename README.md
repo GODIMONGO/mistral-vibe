@@ -206,13 +206,20 @@ enabled = true
 aggressiveness = "high"       # low | medium | high | max
 goal_advisor_model = "devstral-small"
 reviewer_model = "devstral-small" # defaults to the advisor model
-max_parallel_subagents = 4
+max_parallel_subagents = 4        # 0 disables subagents; maximum 16
 max_live_child_runtimes = 8
 max_subagent_result_chars = 32768
 max_review_retries = 3
 require_worker = true
 require_review = true
 ```
+
+Run `/effort` to open the compact slider panel. Thinking (`off` through `max`)
+and the `0–16` subagent limit are independent. The UltraCode row applies maximum
+thinking to the main model, advisor, and reviewer, enables autonomous mode, and
+sets the subagent limit to 16. `/ultracode <objective>` applies that preset before
+running a difficult objective; `/ultracode` without an objective opens the same
+panel with UltraCode selected.
 
 `low` minimizes concurrency and review retries; `max` uses the configured limits
 and refreshes compact context most often. Subagent output and the number of live
@@ -517,8 +524,8 @@ Use `/goal <objective>` to switch to the autonomous agent and start a goal with
 mandatory planning, delegation, fresh verification, and final review. If another
 turn is running, the command waits in the main input queue.
 
-Additional autonomous commands include `/subagents`, `/effort
-off|low|medium|high|max`, `/ultracode <objective>`, `/pc`, `/browser`, `/web`, and
+Additional autonomous commands include `/subagents`, `/effort`,
+`/ultracode [objective]`, `/pc`, `/browser`, `/web`, and
 `/memory`. `/chats` opens the local session picker. `/logout` removes the saved
 Mistral credential and exits so the next launch starts browser sign-in. `/exit`
 only closes the application. Browser sign-in does not launch the browser

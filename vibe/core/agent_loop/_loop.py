@@ -2343,6 +2343,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if not ready:
             return []
         limit = self.config.autonomy.effective_parallel_subagents
+        if limit == 0:
+            return []
         selected = [task for task in ready if task.agent == "explore"][:limit]
         if selected:
             return selected

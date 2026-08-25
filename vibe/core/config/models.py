@@ -21,6 +21,8 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from vibe.config_values import (
+    MAX_PARALLEL_SUBAGENTS,
+    MIN_PARALLEL_SUBAGENTS,
     THINKING_LEVELS as THINKING_LEVELS,
     SpeechOutputFormat,
     ThinkingLevel,
@@ -76,7 +78,9 @@ class AutonomyConfig(BaseModel):
     goal_advisor_model: str = ""
     reviewer_model: str = ""
     max_review_retries: int = Field(default=3, ge=1, le=10)
-    max_parallel_subagents: int = Field(default=4, ge=1, le=16)
+    max_parallel_subagents: int = Field(
+        default=4, ge=MIN_PARALLEL_SUBAGENTS, le=MAX_PARALLEL_SUBAGENTS
+    )
     max_live_child_runtimes: int = Field(default=8, ge=1, le=64)
     max_subagent_result_chars: int = Field(default=32768, ge=1024)
     require_worker: bool = True

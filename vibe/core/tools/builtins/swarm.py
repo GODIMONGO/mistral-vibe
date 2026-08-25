@@ -122,6 +122,8 @@ class Swarm(
 
         autonomy = getattr(ctx.agent_manager.config, "autonomy", None)
         autonomy_parallel = getattr(autonomy, "effective_parallel_subagents", None)
+        if autonomy_parallel == 0:
+            raise ToolError("Subagents are disabled by the current effort setting")
         max_parallel = self.config.max_parallel
         if isinstance(autonomy_parallel, int) and autonomy_parallel > 0:
             max_parallel = min(max_parallel, autonomy_parallel)

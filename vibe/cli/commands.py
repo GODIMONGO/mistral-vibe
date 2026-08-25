@@ -77,8 +77,7 @@ class CommandRegistry:
             "effort": Command(
                 aliases=frozenset(["/effort"]),
                 description=(
-                    "Set thinking and autonomous subagent intensity: "
-                    "off, low, medium, high, or max"
+                    "Tune thinking and the 0-16 subagent limit; includes UltraCode"
                 ),
                 handler="_effort_command",
                 side_channel=True,
@@ -248,7 +247,9 @@ class CommandRegistry:
             ),
             "ultracode": Command(
                 aliases=frozenset(["/ultracode"]),
-                description="Run a difficult objective with max effort and a bounded swarm",
+                description=(
+                    "Open the max-effort preset or run a difficult objective with it"
+                ),
                 handler="_ultracode_command",
             ),
             "pc": Command(

@@ -10,6 +10,8 @@ DEFAULT_LOG_LEVEL = "WARNING"
 type AudioClient = Literal["mistral"]
 type ThinkingLevel = Literal["off", "low", "medium", "high", "max"]
 THINKING_LEVELS: tuple[ThinkingLevel, ...] = ("off", "low", "medium", "high", "max")
+MIN_PARALLEL_SUBAGENTS = 0
+MAX_PARALLEL_SUBAGENTS = 16
 
 type TranscriptionEncoding = Literal["pcm_s16le"]
 type SpeechOutputFormat = Literal["pcm", "wav", "mp3", "flac", "opus"]

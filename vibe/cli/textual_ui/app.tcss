@@ -1951,6 +1951,57 @@ NarratorStatus {
     }
 }
 
+#effortpicker-app {
+    width: 100%;
+    height: auto;
+    background: transparent;
+    border: solid $foreground-muted;
+    padding: 0 1;
+    margin: 0;
+}
+
+#effortpicker-content {
+    width: 100%;
+    height: auto;
+}
+
+.effortpicker-title {
+    height: auto;
+    text-style: bold;
+    color: $primary;
+}
+
+.effortpicker-subtitle {
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+
+    &:ansi {
+        text-style: dim;
+    }
+}
+
+.effortpicker-row {
+    width: 100%;
+    height: auto;
+    padding: 0 1;
+}
+
+#effortpicker-ultracode {
+    margin-top: 1;
+}
+
+.effortpicker-help {
+    width: 100%;
+    height: auto;
+    color: $text-muted;
+    margin-top: 1;
+
+    &:ansi {
+        text-style: dim;
+    }
+}
+
 #loglevelpicker-app {
     width: 100%;
     height: auto;

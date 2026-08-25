@@ -4,7 +4,13 @@ from collections.abc import Callable, Mapping
 
 from vibe.app_server._model import validate_wire
 from vibe.app_server.client_state import ClientSessionState
-from vibe.app_server.config import ConfigView, ProxySettingsView, ThinkingLevel
+from vibe.app_server.config import (
+    MAX_PARALLEL_SUBAGENTS,
+    MIN_PARALLEL_SUBAGENTS,
+    ConfigView,
+    ProxySettingsView,
+    ThinkingLevel,
+)
 from vibe.app_server.connection import AppServerResourceConnection
 from vibe.app_server.models import (
     AccountView,
@@ -56,6 +62,9 @@ from vibe.app_server.protocol import (
     SessionReadyWaitParams,
     SessionReadyWaitResponse,
 )
+
+_MEDIUM_SUBAGENT_CEILING = 2
+_HIGH_SUBAGENT_CEILING = 4
 
 
 def _escape_json_pointer_token(value: str) -> str:
@@ -189,7 +198,18 @@ class ConfigResource:
                 )
             )
 
-    async def set_effort(self, level: ThinkingLevel) -> None:
+    async def set_effort(
+        self, level: ThinkingLevel, max_parallel_subagents: int
+    ) -> None:
+        if (
+            not MIN_PARALLEL_SUBAGENTS
+            <= max_parallel_subagents
+            <= MAX_PARALLEL_SUBAGENTS
+        ):
+            raise ValueError(
+                "max_parallel_subagents must be between "
+                f"{MIN_PARALLEL_SUBAGENTS} and {MAX_PARALLEL_SUBAGENTS}"
+            )
         aliases = {
             self.current.active_model.alias,
             self.current.autonomy.goal_advisor_model,
@@ -203,18 +223,32 @@ class ConfigResource:
             )
             for alias in sorted(aliases - {""})
         ]
-        aggressiveness = {
-            "off": "low",
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "max": "max",
-        }[level]
-        ops.append(
+        if max_parallel_subagents <= 1:
+            aggressiveness = "low"
+        elif max_parallel_subagents <= _MEDIUM_SUBAGENT_CEILING:
+            aggressiveness = "medium"
+        elif max_parallel_subagents <= _HIGH_SUBAGENT_CEILING:
+            aggressiveness = "high"
+        else:
+            aggressiveness = "max"
+        ops.extend([
+            ConfigWriteOpWire(
+                op="set",
+                path="/autonomy/max_parallel_subagents",
+                value=max_parallel_subagents,
+            ),
+            ConfigWriteOpWire(
+                op="set",
+                path="/tools/swarm/max_parallel",
+                value=max(1, max_parallel_subagents),
+            ),
             ConfigWriteOpWire(
                 op="set", path="/autonomy/aggressiveness", value=aggressiveness
-            )
-        )
+            ),
+            ConfigWriteOpWire(
+                op="set", path="/autonomy/enabled", value=max_parallel_subagents > 0
+            ),
+        ])
         response = await self.write(
             ops, reason="app-server effort update", reload_runtime=True
         )

@@ -217,6 +217,23 @@ class TestTaskToolExecution:
                 task_tool.run(TaskArgs(task="do something", agent="explore"), ctx)
             )
 
+    @pytest.mark.asyncio
+    async def test_zero_effort_disables_subagents(
+        self,
+        task_tool: Task,
+        ctx: InvokeContext,
+        build_config: ConfigBuilder,
+        load_orchestrator: OrchestratorLoader[VibeConfigSchema],
+    ) -> None:
+        ctx.agent_manager = AgentManager(
+            load_orchestrator(build_config(autonomy={"max_parallel_subagents": 0}))
+        )
+
+        with pytest.raises(ToolError, match="Subagents are disabled"):
+            await collect_result(
+                task_tool.run(TaskArgs(task="do something", agent="explore"), ctx)
+            )
+
 
 class FakeSubagentRunner:
     def __init__(self, events: list[ToolStreamEvent | TaskResult]) -> None:

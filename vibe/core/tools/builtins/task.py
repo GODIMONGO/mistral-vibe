@@ -133,6 +133,9 @@ class Task(
                 "subagent."
             )
 
+        if agent_manager.config.autonomy.effective_parallel_subagents == 0:
+            raise ToolError("Subagents are disabled by the current effort setting")
+
         try:
             agent_profile = agent_manager.get_agent(args.agent)
         except ValueError as e:

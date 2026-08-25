@@ -139,6 +139,7 @@ from vibe.cli.textual_ui.notifications import (
 )
 from vibe.cli.textual_ui.quit_manager import QuitManager
 from vibe.cli.textual_ui.scheduled_loop_runner import ScheduledLoopCommands
+from vibe.cli.textual_ui.widgets.api_key_app import ApiKeyApp, ApiKeyModelOption
 from vibe.cli.textual_ui.widgets.approval_app import ApprovalApp
 from vibe.cli.textual_ui.widgets.banner.banner import Banner
 from vibe.cli.textual_ui.widgets.chat_input import ChatInputBody, ChatInputContainer
@@ -339,6 +340,7 @@ class BottomApp(StrEnum):
     """
 
     Approval = auto()
+    ApiKey = auto()
     ConnectorAuth = auto()
     Input = auto()
     LogLevelPicker = auto()
@@ -1785,6 +1787,30 @@ class VibeApp(App):  # noqa: PLR0904
             on_discard=partial(self._discard_model),
         )
         await self._switch_to_input_app()
+
+    async def on_api_key_app_model_selected(
+        self, message: ApiKeyApp.ModelSelected
+    ) -> None:
+        await self.query_one(ApiKeyApp).select_model(message.alias)
+
+    async def on_api_key_app_submitted(self, message: ApiKeyApp.Submitted) -> None:
+        await self._queue.enqueue_command(
+            f"api key {message.alias}",
+            command_payload=partial(
+                self._persist_api_key, message.alias, message.api_key
+            ),
+        )
+        await self._switch_to_input_app()
+
+    async def on_api_key_app_cancelled(self, _event: ApiKeyApp.Cancelled) -> None:
+        await self._switch_to_input_app()
+
+    async def _persist_api_key(self, alias: str, api_key: str) -> None:
+        await self.app_server.resources.config.write_api_key(alias, api_key)
+        await self._apply_config_to_ui()
+        await self._mount_and_scroll(
+            UserCommandMessage(f"API key for model '{alias}' saved securely.")
+        )
 
     async def _persist_model(self, alias: str) -> None:
         try:
@@ -3391,6 +3417,19 @@ class VibeApp(App):  # noqa: PLR0904
             return
         await self._switch_to_model_picker_app()
 
+    async def _show_api_key(self, cmd_args: str = "", **kwargs: Any) -> None:
+        alias = cmd_args.strip()
+        aliases = {model.alias for model in self.config.models}
+        if alias and alias not in aliases:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    f"Unknown model alias '{alias}'. Run /api-key to select a model.",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+        await self._switch_to_api_key_app(selected_alias=alias or None)
+
     async def _show_thinking(self, **kwargs: Any) -> None:
         """Switch to the thinking level picker in the bottom panel."""
         if self._current_bottom_app == BottomApp.ThinkingPicker:
@@ -4106,6 +4145,16 @@ class VibeApp(App):  # noqa: PLR0904
             )
         )
 
+    async def _switch_to_api_key_app(self, *, selected_alias: str | None) -> None:
+        models = [
+            ApiKeyModelOption(alias=model.alias, display_name=model.display_name)
+            for model in self.config.models
+        ]
+        widget = ApiKeyApp(models, selected_alias=selected_alias)
+        if self._current_bottom_app == BottomApp.ApiKey:
+            return
+        await self._switch_from_input(widget)
+
     async def _switch_to_thinking_picker_app(self) -> None:
         if self._current_bottom_app == BottomApp.ThinkingPicker:
             return
@@ -4194,6 +4243,7 @@ class VibeApp(App):  # noqa: PLR0904
 
     def _focus_current_bottom_app(self) -> None:
         focus_widget_by_app: dict[BottomApp, type[Widget]] = {
+            BottomApp.ApiKey: ApiKeyApp,
             BottomApp.LogLevelPicker: LogLevelPickerApp,
             BottomApp.ModelPicker: ModelPickerApp,
             BottomApp.ThemePicker: ThemePickerApp,
@@ -4563,6 +4613,7 @@ class VibeApp(App):  # noqa: PLR0904
             BottomApp.ProxySetup: lambda: self._handle_bottom_app_close_escape(
                 ProxySetupApp
             ),
+            BottomApp.ApiKey: lambda: self._handle_bottom_app_close_escape(ApiKeyApp),
             BottomApp.Approval: self._handle_approval_app_escape,
             BottomApp.Question: self._handle_question_app_escape,
             BottomApp.LogLevelPicker: self._handle_log_level_picker_app_escape,

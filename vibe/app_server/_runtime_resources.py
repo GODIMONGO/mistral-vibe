@@ -27,6 +27,7 @@ from vibe.app_server.protocol import (
     AgentsListResponse,
     AgentSwitchParams,
     AppServerResponseError,
+    ConfigApiKeyWriteParams,
     ConfigFieldsReadParams,
     ConfigFieldsReadResponse,
     ConfigMutationResponse,
@@ -196,6 +197,22 @@ class ConfigResource:
                 "config/reload",
                 ConfigReloadParams(
                     session_id=self._state.session_id, reload_runtime=reload_runtime
+                ),
+            ),
+        )
+        self._apply_runtime(response.runtime)
+        return response.stripped_history_images
+
+    async def write_api_key(self, model_alias: str, api_key: str) -> int:
+        client = await self._connection.connect()
+        response = validate_wire(
+            ConfigMutationResponse,
+            await client.request(
+                "config/apiKey/write",
+                ConfigApiKeyWriteParams(
+                    session_id=self._state.session_id,
+                    model_alias=model_alias,
+                    api_key=api_key,
                 ),
             ),
         )

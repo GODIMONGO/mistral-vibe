@@ -49,11 +49,13 @@ def test_session_backend_contract_covers_the_complete_session_lifecycle() -> Non
         "subscribe",
         "switch_agent",
         "update_settings",
+        "write_api_key",
         "write_config",
     }
 
     assert _SESSION_BACKEND_METHODS == {
         "callback/result",
+        "config/apiKey/write",
         "config/reload",
         "config/write",
         "session/agent/update",

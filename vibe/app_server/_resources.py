@@ -39,6 +39,7 @@ from vibe.app_server.protocol import (
     AgentInstallParams,
     AgentsListParams,
     AgentsListResponse,
+    ConfigApiKeyWriteParams,
     ConfigFieldsReadParams,
     ConfigFieldsReadResponse,
     ConfigMutationResponse,
@@ -129,6 +130,7 @@ from vibe.core.proxy_setup import (
 from vibe.core.tools.mcp_settings import persist_mcp_toggle
 from vibe.core.types import Role, ScheduledLoop as CoreScheduledLoop
 from vibe.observability.logging import logger
+from vibe.setup.auth.api_key_persistence import persist_api_key
 from vibe.utils.api_keys import resolve_api_key
 
 _ADMIN_FETCH_FAILURES = frozenset({
@@ -291,6 +293,11 @@ class ResourceRequestHandler:
                 runtime_updated = not write_response.rejected and not (
                     write_response.failures
                 )
+            case "config/apiKey/write":
+                response = await self._config_api_key_write(
+                    validate_wire(ConfigApiKeyWriteParams, raw_params)
+                )
+                runtime_updated = True
             case "config/fields/read":
                 response = await self._config_fields_read(
                     validate_wire(ConfigFieldsReadParams, raw_params)
@@ -596,6 +603,33 @@ class ResourceRequestHandler:
             await self._agent_loop.reload_with_initial_messages(reload_hooks=True)
         else:
             await self._agent_loop.refresh_config()
+        return self._config_mutation_response()
+
+    async def _config_api_key_write(
+        self, params: ConfigApiKeyWriteParams
+    ) -> ConfigMutationResponse:
+        self._execution.require_idle()
+        self._require_session(params.session_id)
+        config = self._agent_loop.config
+        model = config.available_models().get(params.model_alias)
+        if model is None:
+            raise RequestFailure(
+                ProtocolErrorCode.INVALID_PARAMS,
+                f"Unknown model alias: {params.model_alias}",
+            )
+        provider = config.get_provider_for_model(model)
+        result = await asyncio.to_thread(
+            persist_api_key,
+            provider,
+            params.api_key,
+            launch_context=self._agent_loop.launch_context,
+        )
+        if result != "completed":
+            raise RequestFailure(
+                ProtocolErrorCode.INTERNAL_ERROR, f"Failed to save API key: {result}"
+            )
+        self._clear_mcp_discovery_errors()
+        await self._agent_loop.reload_with_initial_messages(reload_hooks=True)
         return self._config_mutation_response()
 
     async def apply_admin_config(self) -> bool:

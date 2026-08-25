@@ -1210,6 +1210,61 @@ StatusMessage {
     height: auto;
 }
 
+#apikey-app {
+    width: 100%;
+    height: auto;
+    background: transparent;
+    border: solid $foreground-muted;
+    padding: 0 1;
+    margin: 0;
+}
+
+#apikey-content {
+    width: 100%;
+    height: auto;
+}
+
+.apikey-title {
+    height: auto;
+    text-style: bold;
+    color: $primary;
+}
+
+#apikey-models {
+    width: 100%;
+    max-height: 50vh;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    border: none;
+}
+
+#apikey-models:focus {
+    border: none;
+}
+
+.apikey-model-label {
+    height: auto;
+}
+
+#apikey-input {
+    width: 100%;
+    height: auto;
+    border: none;
+    border-left: wide $foreground-muted;
+    padding: 0 0 0 1;
+}
+
+.apikey-help {
+    width: 100%;
+    height: auto;
+    color: $text-muted;
+    margin-top: 1;
+
+    &:ansi {
+        text-style: dim;
+    }
+}
+
 .proxy-label-line {
     height: auto;
 }

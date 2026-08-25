@@ -84,6 +84,7 @@ SERVER_METHODS: tuple[str, ...] = (
     "agents/uninstall",
     "callback/result",
     "config/fields/read",
+    "config/apiKey/write",
     "config/proxy/read",
     "config/proxy/write",
     "config/read",
@@ -651,6 +652,12 @@ class ConfigSchemaReadResponse(ProtocolModel):
 class ConfigReloadParams(ProtocolModel):
     session_id: str
     reload_runtime: bool = True
+
+
+class ConfigApiKeyWriteParams(ProtocolModel):
+    session_id: str
+    model_alias: str
+    api_key: str = Field(min_length=1, repr=False)
 
 
 class ConfigProxyReadParams(ProtocolModel):

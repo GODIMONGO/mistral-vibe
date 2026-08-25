@@ -36,6 +36,7 @@ from vibe.app_server.protocol import (
     CallbackResultError,
     CallbackResultParams,
     CallbackResultResponse,
+    ConfigApiKeyWriteParams,
     ConfigMutationResponse,
     ConfigReloadParams,
     ConfigWriteParams,
@@ -251,6 +252,13 @@ class LegacySessionBackend:
         self, params: ConfigWriteParams
     ) -> SessionBackendResult[ConfigWriteResponse]:
         return await self._resource_request("config/write", params, ConfigWriteResponse)
+
+    async def write_api_key(
+        self, params: ConfigApiKeyWriteParams
+    ) -> SessionBackendResult[ConfigMutationResponse]:
+        return await self._resource_request(
+            "config/apiKey/write", params, ConfigMutationResponse
+        )
 
     async def reload_config(
         self, params: ConfigReloadParams

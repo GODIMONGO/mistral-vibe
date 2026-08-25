@@ -758,6 +758,8 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 
 ## Built-in Slash Commands
 
+- `/api-key` - Select a configured model and securely add or replace its API
+  key in a masked field. Pass an alias (`/api-key ALIAS`) to skip the picker.
 - `/goal <objective>` - Switch to the autonomous agent and run the objective with
   mandatory planning, worker delegation, fresh verification, and final review.
   When the session is busy, the command waits in the main input queue.

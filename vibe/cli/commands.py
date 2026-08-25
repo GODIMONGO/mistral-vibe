@@ -62,6 +62,12 @@ class CommandRegistry:
                 handler="_show_model",
                 side_channel=True,
             ),
+            "api-key": Command(
+                aliases=frozenset(["/api-key"]),
+                description="Securely add or replace an API key for a model",
+                handler="_show_api_key",
+                side_channel=True,
+            ),
             "thinking": Command(
                 aliases=frozenset(["/thinking"]),
                 description="Select thinking level",

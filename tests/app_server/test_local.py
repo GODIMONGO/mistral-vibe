@@ -2088,6 +2088,7 @@ async def test_config_mutations_are_rejected_without_a_session(
     await client.notify("initialized")
     session_scoped = (
         ("config/write", {"ops": []}),
+        ("config/apiKey/write", {"modelAlias": "model", "apiKey": "secret"}),
         ("config/reload", {}),
         ("config/proxy/read", {}),
         ("config/proxy/write", {"changes": {}}),

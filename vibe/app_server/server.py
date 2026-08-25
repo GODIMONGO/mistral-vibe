@@ -44,6 +44,7 @@ from vibe.app_server.protocol import (
     CallbackResultParams,
     ClientCapabilities,
     ClientInfo,
+    ConfigApiKeyWriteParams,
     ConfigReloadParams,
     ConfigWriteParams,
     ContextInjectParams,
@@ -116,6 +117,7 @@ _SESSION_OPTIONAL_METHODS = frozenset({"config/read", "workspace/trust/decision"
 
 _SESSION_BACKEND_METHODS = frozenset({
     "callback/result",
+    "config/apiKey/write",
     "config/reload",
     "config/write",
     "session/agent/update",
@@ -822,6 +824,11 @@ class AppServer:
             runtime_updated = (
                 not result.response.rejected and not result.response.failures
             )
+        elif method == "config/apiKey/write":
+            result = await root.write_api_key(
+                validate_wire(ConfigApiKeyWriteParams, raw_params)
+            )
+            runtime_updated = True
         elif method == "config/reload":
             result = await root.reload_config(
                 validate_wire(ConfigReloadParams, raw_params)

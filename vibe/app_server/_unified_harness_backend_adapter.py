@@ -400,6 +400,9 @@ class UnifiedHarnessBackendAdapter:
     async def write_config(self, params: object) -> Never:
         _reject("config/write")
 
+    async def write_api_key(self, params: object) -> Never:
+        _reject("config/apiKey/write")
+
     async def reload_config(self, params: object) -> Never:
         _reject("config/reload")
 

@@ -190,6 +190,9 @@ masked setup flow:
 vibe --add-api-key devstral-small
 ```
 
+From an active Vibe session, run `/api-key` to select a configured model and
+enter its key in a masked field. Use `/api-key ALIAS` to skip the picker.
+
 Then add the autonomy policy to `config.toml`:
 
 ```toml
@@ -384,6 +387,9 @@ Toggle voice mode on or off with the `/voice` slash command:
 Use slash commands for meta-actions and configuration changes during a session.
 
 ### Built-in Slash Commands
+
+Use `/api-key` to select a configured model and securely add or replace its API
+key. `/api-key ALIAS` opens the masked key field directly for that alias.
 
 Vibe provides several built-in slash commands. Use slash commands by typing them in the input box:
 

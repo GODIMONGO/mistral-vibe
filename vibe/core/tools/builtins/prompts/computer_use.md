@@ -8,8 +8,9 @@ state and verify that the intended window is still foreground.
 Actions:
 
 - `observe`: return visible windows and controls without changing the desktop.
-- `screenshot`: save the current virtual desktop to the returned BMP path for the
-  user and audit trail. The screenshot is not automatically visible to the model.
+- `screenshot`: capture the virtual desktop into one bounded scratchpad PNG. Vibe
+  attaches successful captures to the next model call when the active model supports
+  images; text-only models still receive the structured window/control state and path.
 - `focus`: restore and focus a window by `hwnd` from the latest observation.
 - `click`: click absolute virtual-screen coordinates with left, right, or middle.
 - `type`: enter Unicode text into the focused control.

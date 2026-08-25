@@ -6,6 +6,7 @@ from vibe.core.autonomy import (
     AutonomyCoordinator,
     AutonomyDecisionKind,
     AutonomyPolicy,
+    is_computer_control_capability_question,
     parse_advisor_plan,
 )
 from vibe.core.subagents import SwarmArgs, SwarmResult, TaskArgs, TaskResult
@@ -45,6 +46,26 @@ def test_invalid_advisor_plan_falls_back_to_a_worker_task() -> None:
     assert len(plan.tasks) == 1
     assert plan.tasks[0].agent == "worker"
     assert plan.tasks[0].content == "Implement the requested feature"
+
+
+def test_advisor_plan_accepts_root_owned_desktop_tasks() -> None:
+    plan = parse_advisor_plan(
+        '<goal-plan>{"tasks":['
+        '{"id":"desktop","content":"Control and verify the desktop",'
+        '"agent":"root","depends_on":[]}]}</goal-plan>',
+        "fallback",
+    )
+
+    assert plan.tasks[0].agent == "root"
+
+
+def test_computer_capability_question_classifier_is_narrow() -> None:
+    assert is_computer_control_capability_question("ты можешь управлять пк?")
+    assert is_computer_control_capability_question("Can you fully control my computer?")
+    assert not is_computer_control_capability_question("Можешь открыть Блокнот?")
+    assert not is_computer_control_capability_question(
+        "Добавь управление компьютером в приложение"
+    )
 
 
 def _task_call(call_id: str, agent: str) -> ToolCallEvent:
@@ -177,6 +198,18 @@ def test_reviewer_runs_only_after_plan_and_worker_are_complete() -> None:
     assert coordinator.should_run_reviewer() is False
     coordinator.observe(_task_call("worker-1", "worker"))
     coordinator.observe(_task_result("worker-1"))
+
+    assert coordinator.should_run_reviewer() is True
+    _observe_passing_reviewer(coordinator)
+    assert coordinator.should_run_reviewer() is False
+
+
+def test_root_owned_plan_does_not_require_an_inaccessible_worker() -> None:
+    coordinator = AutonomyCoordinator(AutonomyPolicy(require_worker=True))
+    coordinator.start_turn()
+    coordinator.allow_root_owned_plan()
+    _observe_successful_advisor(coordinator)
+    coordinator.observe(_terminal_todos())
 
     assert coordinator.should_run_reviewer() is True
     _observe_passing_reviewer(coordinator)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum, auto
 import json
+import re
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -36,7 +37,7 @@ class AutonomyPlanTask(BaseModel):
 
     id: str = Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
     content: str = Field(min_length=1, max_length=MAX_AUTOMATIC_TASK_CHARS)
-    agent: str = Field(pattern=r"^(explore|worker)$")
+    agent: str = Field(pattern=r"^(explore|worker|root)$")
     depends_on: list[str] = Field(default_factory=list)
 
 
@@ -106,6 +107,21 @@ def parse_advisor_plan(response: str, objective: str) -> AutonomyPlan:
     )
 
 
+_COMPUTER_CAPABILITY_QUESTION = re.compile(
+    r"^(?:(?:а\s+)?(?:ты\s+)?(?:можешь(?:\s+ли\s+ты)?|умеешь)\s+"
+    r"(?:полноценно\s+)?управлять\s+(?:моим\s+)?(?:пк|компьютером|рабочим\s+столом)"
+    r"|can\s+you\s+(?:fully\s+)?control\s+(?:my\s+)?(?:pc|computer|desktop))"
+    r"[\s?.!]*$",
+    re.IGNORECASE,
+)
+
+
+def is_computer_control_capability_question(objective: str) -> bool:
+    """Return whether *objective* only asks if desktop control is available."""
+    normalized = " ".join(objective.split())
+    return bool(_COMPUTER_CAPABILITY_QUESTION.fullmatch(normalized))
+
+
 class AutonomyDecisionKind(StrEnum):
     PASS = auto()
     RETRY = auto()
@@ -160,6 +176,7 @@ class AutonomyCoordinator:
         self._mutation_calls: set[str] = set()
         self._advisor_completed = False
         self._worker_completed = False
+        self._worker_required = self.policy.require_worker
         self._todos: TodoResult | None = None
         self._latest_required_sequence = -1
         self._reviewer_sequence = -1
@@ -178,6 +195,7 @@ class AutonomyCoordinator:
         self._mutation_calls.clear()
         self._advisor_completed = False
         self._worker_completed = False
+        self._worker_required = self.policy.require_worker
         self._todos = None
         self._latest_required_sequence = -1
         self._reviewer_sequence = -1
@@ -186,6 +204,10 @@ class AutonomyCoordinator:
     def seed_advisor_completed(self) -> None:
         self._advisor_completed = True
         self._latest_required_sequence = self._sequence
+
+    def allow_root_owned_plan(self) -> None:
+        """Allow a plan that must stay on the root agent for root-only tools."""
+        self._worker_required = False
 
     def observe(self, event: BaseEvent) -> None:
         self._sequence += 1
@@ -233,7 +255,7 @@ class AutonomyCoordinator:
             for todo in self._todos.todos
         ):
             return False
-        if self.policy.require_worker and not self._worker_completed:
+        if self._worker_required and not self._worker_completed:
             return False
         return not self._reviewer_passed or (
             self._reviewer_sequence <= self._latest_required_sequence
@@ -325,7 +347,7 @@ class AutonomyCoordinator:
             for todo in self._todos.todos
         ):
             reasons.append("the plan/todo list still has non-terminal items")
-        if self.policy.require_worker and not self._worker_completed:
+        if self._worker_required and not self._worker_completed:
             reasons.append("a worker has not completed successfully")
         if self.policy.require_review:
             if not self._reviewer_passed:
@@ -356,5 +378,6 @@ __all__ = [
     "AutonomyPlan",
     "AutonomyPlanTask",
     "AutonomyPolicy",
+    "is_computer_control_capability_question",
     "parse_advisor_plan",
 ]

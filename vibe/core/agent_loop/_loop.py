@@ -32,6 +32,7 @@ from vibe.core.autonomy import (
     AutonomyPlan,
     AutonomyPlanTask,
     AutonomyPolicy,
+    is_computer_control_capability_question,
     parse_advisor_plan,
 )
 from vibe.core.checkpoints import Checkpointer, CheckpointRecorder, FileStore
@@ -1753,12 +1754,17 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         coordinator.start_turn()
         return coordinator
 
-    def _prepare_autonomy_turn(self, *, injected: bool) -> AutonomyCoordinator | None:
+    def _prepare_autonomy_turn(
+        self, *, injected: bool, objective: str
+    ) -> AutonomyCoordinator | None:
         self._reactive_recovery_used = False
         self._autonomy_bootstrap_blocked = False
         if injected and self._autonomy_coordinator is not None:
             return self._autonomy_coordinator
         self._autonomy_evidence = []
+        if is_computer_control_capability_question(objective):
+            self._autonomy_coordinator = None
+            return None
         self._autonomy_coordinator = self._new_autonomy_coordinator()
         return self._autonomy_coordinator
 
@@ -1855,6 +1861,19 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if self._hooks_manager:
             self._hooks_manager.reset_retry_count()
 
+    @staticmethod
+    def _should_break_after_turn(last_message: LLMMessage, *, drained: bool) -> bool:
+        injected_visual_result = (
+            last_message.role is Role.user
+            and last_message.injected
+            and bool(last_message.images)
+        )
+        return (
+            last_message.role is not Role.tool
+            and not injected_visual_result
+            and not drained
+        )
+
     async def _conversation_loop(  # noqa: PLR0912
         self,
         user_msg: str,
@@ -1880,7 +1899,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             yield event
 
         try:
-            autonomy = self._prepare_autonomy_turn(injected=injected)
+            autonomy = self._prepare_autonomy_turn(
+                injected=injected, objective=user_msg
+            )
             async for event in self._bootstrap_autonomy(
                 autonomy, user_msg, injected=injected
             ):
@@ -1934,7 +1955,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
                 last_message = self.messages[-1]
                 drained = self._drain_pending_injections()
-                should_break_loop = last_message.role != Role.tool and not drained
+                should_break_loop = self._should_break_after_turn(
+                    last_message, drained=drained
+                )
 
                 if user_cancelled:
                     return
@@ -2080,10 +2103,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         self._autonomy_advisor_completed = True
         plan = parse_advisor_plan(advisor_result.response, objective)
-        if self.config.autonomy.require_worker and not any(
-            task.agent == "worker" for task in plan.tasks
-        ):
+        has_worker = any(task.agent == "worker" for task in plan.tasks)
+        has_root = any(task.agent == "root" for task in plan.tasks)
+        if self.config.autonomy.require_worker and not has_worker and not has_root:
             plan = parse_advisor_plan("", objective)
+        elif has_root and self._autonomy_coordinator is not None:
+            self._autonomy_coordinator.allow_root_owned_plan()
         async for event in self._run_automatic_autonomy_plan(plan, objective):
             yield event
         if self._autonomy_bootstrap_blocked:
@@ -2093,9 +2118,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 role=Role.user,
                 injected=True,
                 content=(
-                    "The goal advisor plan was materialized and its ready tasks were "
-                    "automatically delegated. Integrate the subagent results, resolve "
-                    "any remaining todo, collect fresh evidence after mutations, and "
+                    "The goal advisor plan was materialized. Ready explore/worker "
+                    "tasks were delegated; root tasks remain for you to execute "
+                    "directly with root-only tools such as computer_use. Resolve every "
+                    "remaining todo, inspect observable state after mutations, and "
                     "finish only after the automatic reviewer passes."
                 ),
             )
@@ -2320,7 +2346,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         selected = [task for task in ready if task.agent == "explore"][:limit]
         if selected:
             return selected
-        return [next(task for task in ready if task.agent == "worker")]
+        worker = next((task for task in ready if task.agent == "worker"), None)
+        return [worker] if worker is not None else []
 
     @staticmethod
     def _automatic_task_prompt(
@@ -2783,8 +2810,30 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self._record_tool_call_presentation(event)
             yield event
 
+        result_images: list[ImageAttachment] = []
         async for event in self._run_tools_concurrently(resolved.tool_calls):
+            if (
+                isinstance(event, ToolResultEvent)
+                and event.result is not None
+                and not (event.error or event.cancelled or event.skipped)
+            ):
+                with contextlib.suppress(NoSuchToolError):
+                    tool = self.tool_manager.get(event.tool_name)
+                    result_images.extend(tool.get_result_images(event.result))
             yield event
+        if result_images:
+            self.messages.append(
+                LLMMessage(
+                    role=Role.user,
+                    injected=True,
+                    content=(
+                        "Visual output captured by the completed tool batch is "
+                        "attached. Inspect it before deciding the next action and "
+                        "verify the observable result instead of assuming success."
+                    ),
+                    images=result_images,
+                )
+            )
 
     def _record_tool_call_presentation(self, event: ToolCallEvent) -> None:
         if event.presentation is None:

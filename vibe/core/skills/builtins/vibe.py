@@ -209,13 +209,17 @@ the recommended Mistral-backed advisor; an empty alias safely follows the active
 model.
 
 On Windows, `computer_use` provides bounded structured observation, one
-overwriting audit screenshot in the session scratchpad, focus, click, Unicode
-typing, key chords, and scrolling. Observation and screenshots are read-only;
-mutating actions follow `[tools.computer_use].permission`. Never pass secrets in
-`text`, because tool arguments are session-visible. Win32 imports are lazy and the
-tool is unavailable on other operating systems. Worker subagents intentionally do
-not receive desktop control, preventing parallel agents from racing for the mouse
-and keyboard.
+overwriting PNG screenshot in the session scratchpad, focus, click, Unicode typing,
+key chords, and scrolling. Completed captures are attached to the next request for
+vision-capable models; text-only models retain the structured state. Observation
+and screenshots are read-only; mutating actions follow
+`[tools.computer_use].permission`. Never pass secrets in `text`, because tool
+arguments are session-visible. Win32 imports are lazy and the tool is unavailable
+on other operating systems. Worker subagents intentionally do not receive desktop
+control. Advisor plans must assign desktop interaction and observable-state
+verification to `root`, preventing parallel agents from racing for the mouse and
+keyboard. Pure capability questions bypass the autonomous advisor and are answered
+directly.
 
 ### Automatic Model Fallback
 

@@ -6,8 +6,10 @@ import ctypes
 from enum import StrEnum, auto
 import importlib
 from pathlib import Path
+import struct
 import tempfile
 from typing import Any, ClassVar, Protocol
+import zlib
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -21,7 +23,12 @@ from vibe.core.tools.base import (
 )
 from vibe.core.tools.permissions import PermissionContext
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
-from vibe.core.types import ToolResultEvent, ToolStreamEvent
+from vibe.core.types import (
+    FileImageSource,
+    ImageAttachment,
+    ToolResultEvent,
+    ToolStreamEvent,
+)
 from vibe.core.utils import is_windows
 from vibe.utils.tool_presentation import ToolEffectKind
 
@@ -145,6 +152,80 @@ def _win32_modules() -> tuple[Any, Any, Any, Any]:
         importlib.import_module("win32con"),
         importlib.import_module("win32gui"),
         importlib.import_module("win32ui"),
+    )
+
+
+def _png_chunk(kind: bytes, payload: bytes) -> bytes:
+    body = kind + payload
+    return struct.pack(">I", len(payload)) + body + struct.pack(">I", zlib.crc32(body))
+
+
+def _parse_bmp_header(data: bytes) -> tuple[int, int, int, int, int, bool]:
+    bitmap_header_size = 54
+    dib_header_size = 40
+    if len(data) < bitmap_header_size or data[:2] != b"BM":
+        raise ToolError("Windows screenshot did not produce a valid BMP")
+    pixel_offset = struct.unpack_from("<I", data, 10)[0]
+    dib_size = struct.unpack_from("<I", data, 14)[0]
+    width, signed_height = struct.unpack_from("<ii", data, 18)
+    planes, bits_per_pixel = struct.unpack_from("<HH", data, 26)
+    compression = struct.unpack_from("<I", data, 30)[0]
+    invalid_dimensions = dib_size < dib_header_size or width <= 0 or signed_height == 0
+    invalid_encoding = planes != 1 or bits_per_pixel not in {24, 32} or compression != 0
+    if invalid_dimensions or invalid_encoding:
+        raise ToolError("Unsupported Windows screenshot bitmap format")
+    height = abs(signed_height)
+    source_stride = ((width * bits_per_pixel + 31) // 32) * 4
+    if pixel_offset + source_stride * height > len(data):
+        raise ToolError("Windows screenshot bitmap is truncated")
+    return width, height, bits_per_pixel, pixel_offset, source_stride, signed_height < 0
+
+
+def _bmp_scanlines(
+    data: bytes,
+    *,
+    width: int,
+    height: int,
+    bits_per_pixel: int,
+    pixel_offset: int,
+    source_stride: int,
+    top_down: bool,
+) -> bytes:
+    rows = range(height) if top_down else range(height - 1, -1, -1)
+    channels = bits_per_pixel // 8
+    scanlines = bytearray()
+    for row in rows:
+        start = pixel_offset + row * source_stride
+        source = data[start : start + width * channels]
+        scanlines.append(0)
+        for offset in range(0, len(source), channels):
+            blue, green, red = source[offset : offset + 3]
+            scanlines.extend((red, green, blue))
+    return bytes(scanlines)
+
+
+def _bmp_to_png(data: bytes) -> bytes:
+    """Convert an uncompressed 24/32-bit Win32 BMP capture to RGB PNG."""
+    width, height, bits_per_pixel, pixel_offset, source_stride, top_down = (
+        _parse_bmp_header(data)
+    )
+
+    scanlines = _bmp_scanlines(
+        data,
+        width=width,
+        height=height,
+        bits_per_pixel=bits_per_pixel,
+        pixel_offset=pixel_offset,
+        source_stride=source_stride,
+        top_down=top_down,
+    )
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    signature = b"\x89PNG\r\n\x1a\n"
+    return (
+        signature
+        + _png_chunk(b"IHDR", header)
+        + _png_chunk(b"IDAT", zlib.compress(scanlines, level=6))
+        + _png_chunk(b"IEND", b"")
     )
 
 
@@ -302,7 +383,12 @@ class WindowsComputerBackend:
                 (0, 0), (width, height), source_dc, (left, top), win32con.SRCCOPY
             )
             path.parent.mkdir(parents=True, exist_ok=True)
-            bitmap.SaveBitmapFile(memory_dc, str(path))
+            bmp_path = path.with_suffix(".capture.bmp")
+            bitmap.SaveBitmapFile(memory_dc, str(bmp_path))
+            try:
+                path.write_bytes(_bmp_to_png(bmp_path.read_bytes()))
+            finally:
+                bmp_path.unlink(missing_ok=True)
         finally:
             memory_dc.DeleteDC()
             source_dc.DeleteDC()
@@ -465,7 +551,7 @@ class ComputerUse(
             base = ctx.scratchpad_dir or ctx.session_dir
         if base is None:
             base = Path(tempfile.gettempdir()) / "vibe-computer-use"
-        return base.resolve() / "computer-use-latest.bmp"
+        return base.resolve() / "computer-use-latest.png"
 
     def _run_sync(
         self, backend: ComputerBackend, args: ComputerUseArgs, ctx: InvokeContext | None
@@ -520,6 +606,20 @@ class ComputerUse(
     ) -> AsyncGenerator[ToolStreamEvent | ComputerUseResult, None]:
         backend = _create_backend()
         yield await asyncio.to_thread(self._run_sync, backend, args, ctx)
+
+    def get_result_images(self, result: ComputerUseResult) -> list[ImageAttachment]:
+        if result.screenshot_path is None:
+            return []
+        path = Path(result.screenshot_path)
+        if not path.is_file():
+            return []
+        return [
+            ImageAttachment(
+                source=FileImageSource(path=path),
+                alias=path.name,
+                mime_type="image/png",
+            )
+        ]
 
     @classmethod
     def format_call_display(cls, args: ComputerUseArgs) -> ToolCallDisplay:

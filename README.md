@@ -244,9 +244,9 @@ permission = "ask" # use "always" only when autonomous memory writes are desired
 ### Computer Use (Windows)
 
 On Windows, the built-in `computer_use` tool can observe visible windows and
-controls, save an audit screenshot, focus a window, click, type Unicode text,
-press key chords, and scroll. It uses the existing pinned `pywin32` runtime and
-loads Win32 modules only when invoked. Mutating actions use the normal tool
+controls, inspect a visual desktop capture, focus a window, click, type Unicode
+text, press key chords, and scroll. It uses the existing pinned `pywin32` runtime
+and loads Win32 modules only when invoked. Mutating actions use the normal tool
 permission flow; observation and screenshots are read-only. Configure it with:
 
 ```toml
@@ -257,11 +257,14 @@ max_controls = 80
 max_text_chars = 4000
 ```
 
-The latest screenshot overwrites one `computer-use-latest.bmp` file in the
-session scratchpad to bound disk usage. Tool arguments are session-visible, so
-the agent must never enter passwords, API keys, payment details, or other secrets.
-Worker subagents do not receive this tool; the root agent owns the single local
-mouse and keyboard.
+The latest screenshot overwrites one `computer-use-latest.png` file in the
+session scratchpad to bound disk usage. Vibe attaches completed captures to the
+next request when the active model supports images; text-only models still receive
+structured window/control state. Tool arguments are session-visible, so the agent
+must never enter passwords, API keys, payment details, or other secrets. Worker
+subagents do not receive this tool: autonomous desktop tasks stay on the root agent,
+which owns the single local mouse and keyboard. A short capability question such as
+"can you control my computer?" bypasses autonomous planning and is answered directly.
 
 ### Web Search
 

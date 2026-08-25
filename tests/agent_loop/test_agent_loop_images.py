@@ -13,13 +13,26 @@ from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from vibe.core.agent_loop import ImagesNotSupportedError
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfigSchema
-from vibe.core.types import Backend, FileImageSource, ImageAttachment, LLMMessage, Role
+from vibe.core.tools.builtins import computer_use
+from vibe.core.tools.builtins.computer_use import ComputerState, ScreenRect
+from vibe.core.types import (
+    Backend,
+    FileImageSource,
+    FunctionCall,
+    ImageAttachment,
+    LLMMessage,
+    Role,
+    ToolCall,
+)
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
 
 def _config_with_vision_flag(
-    *, supports_images: bool, display_name: str | None = None
+    *,
+    supports_images: bool,
+    display_name: str | None = None,
+    enabled_tools: list[str] | None = None,
 ) -> VibeConfigSchema:
     models = [
         ModelConfig(
@@ -39,7 +52,11 @@ def _config_with_vision_flag(
         )
     ]
     return build_test_vibe_config(
-        active_model="devstral-latest", models=models, providers=providers
+        active_model="devstral-latest",
+        models=models,
+        providers=providers,
+        enabled_tools=enabled_tools or [],
+        tools={"computer_use": {"permission": "always"}},
     )
 
 
@@ -129,6 +146,55 @@ async def test_act_attaches_images_to_user_message(
     user_msgs = [m for m in agent.messages if m.role.value == "user"]
     assert len(user_msgs) == 1
     assert user_msgs[0].images == [png_attachment]
+
+
+class _ScreenshotBackend:
+    def screenshot(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(PNG_BYTES)
+
+    def observe(self, *, max_windows: int, max_controls: int) -> ComputerState:
+        del max_windows, max_controls
+        return ComputerState(
+            screen=ScreenRect(left=0, top=0, right=100, bottom=100),
+            cursor_x=0,
+            cursor_y=0,
+            foreground_hwnd=None,
+            foreground_title="",
+            windows=[],
+            controls=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_computer_screenshot_is_attached_after_the_tool_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(computer_use, "is_windows", lambda: True)
+    monkeypatch.setattr(computer_use, "_create_backend", _ScreenshotBackend)
+    call = ToolCall(
+        id="screenshot",
+        index=0,
+        function=FunctionCall(name="computer_use", arguments='{"action":"screenshot"}'),
+    )
+    backend = FakeBackend([
+        [mock_llm_chunk(content="Looking", tool_calls=[call])],
+        [mock_llm_chunk(content="I inspected the screenshot")],
+    ])
+    config = _config_with_vision_flag(
+        supports_images=True, enabled_tools=["computer_use"]
+    )
+    agent = build_test_agent_loop(config=config, backend=backend)
+
+    events = [_ async for _ in agent.act("Inspect the desktop")]
+
+    assert len(backend.requests_messages) == 2, [repr(event) for event in events]
+    second_request = backend.requests_messages[1]
+    visual_message = next(message for message in second_request if message.images)
+    assert visual_message.injected is True
+    assert visual_message.images is not None
+    assert visual_message.images[0].mime_type == "image/png"
+    assert visual_message.images[0].alias == "computer-use-latest.png"
 
 
 def _seed_history_image(agent, png_attachment: ImageAttachment) -> None:

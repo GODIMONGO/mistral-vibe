@@ -14,7 +14,9 @@ from vibe.core.tools.base import InvokeContext
 from vibe.core.tools.builtins.todo import TodoArgs, TodoResult, TodoStatus
 from vibe.core.types import (
     AssistantEvent,
+    FunctionCall,
     Role,
+    ToolCall,
     ToolCallEvent,
     ToolResultEvent,
     ToolStreamEvent,
@@ -60,6 +62,92 @@ class _AdvisorRunner:
         if False:
             yield ToolStreamEvent(tool_name="swarm", message="", tool_call_id="")
         return
+
+
+@pytest.mark.asyncio
+async def test_computer_capability_question_skips_slow_autonomy_bootstrap() -> None:
+    backend = FakeBackend([[mock_llm_chunk(content="Да, через computer_use.")]])
+    config = build_test_vibe_config(
+        enabled_tools=["task", "todo", "computer_use"],
+        tools={
+            "task": {
+                "permission": "always",
+                "allowlist": ["goal-advisor", "reviewer", "worker", "explore"],
+            }
+        },
+        autonomy=AutonomyConfig(enabled=True, require_worker=True),
+    )
+    agent = build_test_agent_loop(config=config, backend=backend)
+    runner = _AdvisorRunner()
+
+    events = [
+        event
+        async for event in agent.act("ты можешь управлять пк?", subagent_runner=runner)
+    ]
+
+    assert runner.calls == []
+    assert len(backend.requests_messages) == 1
+    assert any(
+        isinstance(event, AssistantEvent) and "computer_use" in event.content
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_root_desktop_plan_stays_on_main_agent() -> None:
+    complete_todo = ToolCall(
+        id="complete-desktop",
+        index=0,
+        function=FunctionCall(
+            name="todo",
+            arguments=(
+                '{"action":"write","todos":[{"id":"desktop",'
+                '"content":"Observe and verify the desktop","status":"completed",'
+                '"priority":"medium","depends_on":[]}]}'
+            ),
+        ),
+    )
+    backend = FakeBackend([
+        [mock_llm_chunk(content="Desktop verified", tool_calls=[complete_todo])],
+        [mock_llm_chunk(content="Desktop task complete")],
+    ])
+    config = build_test_vibe_config(
+        enabled_tools=["task", "todo", "computer_use"],
+        tools={
+            "task": {
+                "permission": "always",
+                "allowlist": ["goal-advisor", "reviewer", "worker", "explore"],
+            }
+        },
+        autonomy=AutonomyConfig(
+            enabled=True, require_worker=True, require_review=False
+        ),
+    )
+    agent = build_test_agent_loop(config=config, backend=backend)
+    runner = _AdvisorRunner(
+        '<goal-plan>{"tasks":[{"id":"desktop",'
+        '"content":"Observe and verify the desktop","agent":"root",'
+        '"depends_on":[]}]}</goal-plan>'
+    )
+
+    events = [
+        event
+        async for event in agent.act("Open and inspect the app", subagent_runner=runner)
+    ]
+
+    assert [call.agent for call in runner.calls] == ["goal-advisor"]
+    assert not any(
+        isinstance(event, ToolCallEvent)
+        and isinstance(event.args, TaskArgs)
+        and event.args.agent in {"explore", "worker"}
+        for event in events
+    )
+    final_plan = next(
+        event.result
+        for event in reversed(events)
+        if isinstance(event, ToolResultEvent) and isinstance(event.result, TodoResult)
+    )
+    assert final_plan.todos[0].status is TodoStatus.COMPLETED
 
 
 class _CancellingSecondWorkerRunner(_AdvisorRunner):
@@ -165,7 +253,9 @@ async def test_autonomy_runs_advisor_before_first_main_model_call() -> None:
         and "<goal-plan>" in (message.content or "")
         for message in first_request
     )
-    assert "automatically delegated" in (first_request[-1].content or "")
+    assert "Ready explore/worker tasks were delegated" in (
+        first_request[-1].content or ""
+    )
 
 
 @pytest.mark.asyncio

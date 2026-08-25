@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+import struct
 from typing import Any
 
 import pytest
@@ -19,6 +20,7 @@ from vibe.core.tools.builtins.computer_use import (
     ScreenRect,
     WindowInfo,
 )
+from vibe.core.types import FileImageSource
 
 
 class FakeBackend:
@@ -151,6 +153,27 @@ def test_windows_key_is_rejected() -> None:
         backend._virtual_key("win")
 
 
+def _single_pixel_bmp(*, red: int, green: int, blue: int) -> bytes:
+    pixel_offset = 54
+    row = bytes((blue, green, red, 0))
+    file_size = pixel_offset + len(row)
+    file_header = b"BM" + struct.pack("<IHHI", file_size, 0, 0, pixel_offset)
+    dib_header = struct.pack("<IiiHHIIiiII", 40, 1, 1, 1, 24, 0, len(row), 0, 0, 0, 0)
+    return file_header + dib_header + row
+
+
+def test_bmp_capture_is_converted_to_png() -> None:
+    png = computer_use._bmp_to_png(_single_pixel_bmp(red=255, green=0, blue=0))
+
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert struct.unpack_from(">II", png, 16) == (1, 1)
+
+
+def test_invalid_bmp_capture_is_rejected() -> None:
+    with pytest.raises(ToolError, match="valid BMP"):
+        computer_use._bmp_to_png(b"not a bitmap")
+
+
 @pytest.mark.asyncio
 async def test_observe_returns_structured_state(
     tool: ComputerUse, backend: FakeBackend
@@ -166,7 +189,7 @@ async def test_click_captures_and_observes_after_action(
     tool: ComputerUse, backend: FakeBackend, tmp_path: Path
 ) -> None:
     result = await invoke(tool, action="click", x=25, y=50, clicks=2)
-    expected_path = tmp_path / "computer-use-latest.bmp"
+    expected_path = tmp_path / "computer-use-latest.png"
     assert backend.calls == [
         ("click", 25, 50, MouseButton.LEFT, 2),
         ("screenshot", expected_path),
@@ -228,4 +251,24 @@ async def test_context_scratchpad_is_used_when_tool_has_no_path(
     items: AsyncIterator[object] = tool.invoke(ctx, action="screenshot")
     result_items = [item async for item in items]
     assert isinstance(result_items[0], ComputerUseResult)
-    assert result_items[0].screenshot_path == str(tmp_path / "computer-use-latest.bmp")
+    assert result_items[0].screenshot_path == str(tmp_path / "computer-use-latest.png")
+
+
+def test_screenshot_result_is_exposed_as_a_visual_attachment(
+    tool: ComputerUse, tmp_path: Path
+) -> None:
+    path = tmp_path / "computer-use-latest.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    result = ComputerUseResult(
+        action=ComputerAction.SCREENSHOT,
+        message="captured",
+        state=FakeBackend().observe(max_windows=24, max_controls=80),
+        screenshot_path=str(path),
+    )
+
+    images = tool.get_result_images(result)
+
+    assert len(images) == 1
+    assert images[0].mime_type == "image/png"
+    assert isinstance(images[0].source, FileImageSource)
+    assert images[0].source.path == path

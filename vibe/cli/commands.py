@@ -137,19 +137,20 @@ class CommandRegistry:
                 handler="_compact_history",
             ),
             "exit": Command(
-                aliases=frozenset([
-                    "/exit",
-                    "/logaut",
-                    "/logout",
-                    "exit",
-                    "quit",
-                    ":q",
-                    ":quit",
-                ]),
+                aliases=frozenset(["/exit", "exit", "quit", ":q", ":quit"]),
                 description="Exit the application",
                 handler="_exit_app",
                 exits=True,
                 side_channel=True,
+            ),
+            "logout": Command(
+                aliases=frozenset(["/logout", "/logaut"]),
+                description=(
+                    "Sign out of the Mistral account and exit; the next launch "
+                    "starts browser sign-in"
+                ),
+                handler="_logout_account",
+                exits=True,
             ),
             "status": Command(
                 aliases=frozenset(["/status"]),

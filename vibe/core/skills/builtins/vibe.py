@@ -895,7 +895,9 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/unleanstall` - Uninstall the Lean 4 agent
 - `/data-retention` - Show data retention information
 - `/teleport` - Teleport session to Vibe Code Web (only available when Vibe Code is enabled)
-- `/exit` (or `/logaut`, `/logout`) - Exit the application
+- `/logout` (or `/logaut`) - Remove the saved Mistral account credential and
+  exit. The next launch starts browser sign-in.
+- `/exit` - Exit the application without signing out
 
 ## File Mentions (`@`)
 

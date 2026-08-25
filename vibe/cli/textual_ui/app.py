@@ -3390,6 +3390,47 @@ class VibeApp(App):  # noqa: PLR0904
             lines.append(f"- **Plan**: {plan}")
         await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
 
+    async def _logout_account(self, **_kwargs: Any) -> None:
+        from vibe.setup.auth import (
+            AccountSignOutUnavailableError,
+            AuthStateKind,
+            sign_out_account,
+        )
+        from vibe.setup.onboarding.context import OnboardingContext
+
+        try:
+            sign_out_account(OnboardingContext.load().provider)
+        except AccountSignOutUnavailableError as error:
+            if error.state.kind is AuthStateKind.PROCESS_ENV:
+                message = (
+                    "Cannot sign out while MISTRAL_API_KEY is supplied by the "
+                    "parent process. Unset it and restart Vibe."
+                )
+            elif error.state.kind is AuthStateKind.SIGNED_OUT:
+                message = "Already signed out. Restart Vibe to sign in."
+            else:
+                message = str(error)
+            await self._mount_and_scroll(
+                ErrorMessage(message, collapsed=self._tools_collapsed)
+            )
+            return
+        except Exception as error:
+            logger.error("Mistral account sign-out failed", exc_info=error)
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    f"Failed to sign out: {error}", collapsed=self._tools_collapsed
+                )
+            )
+            return
+
+        await self._mount_and_scroll(
+            UserCommandMessage(
+                "Signed out of the Mistral account. Restart Vibe to sign in "
+                "through the browser."
+            )
+        )
+        await self._exit_app()
+
     async def _show_config(self, **kwargs: Any) -> None:
         """Open the full-screen, searchable settings browser."""
         from vibe.cli.textual_ui.screens.config import ConfigScreen

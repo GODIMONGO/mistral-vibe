@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from vibe.setup.auth.account import AccountSignOutUnavailableError, sign_out_account
 from vibe.setup.auth.auth_state import AuthState, AuthStateKind, assess_auth_state
 from vibe.setup.auth.browser_sign_in import (
     BrowserSignInAttempt,
@@ -20,6 +21,7 @@ from vibe.setup.auth.browser_sign_in_gateway import (
 from vibe.setup.auth.http_browser_sign_in_gateway import HttpBrowserSignInGateway
 
 __all__ = [
+    "AccountSignOutUnavailableError",
     "AuthState",
     "AuthStateKind",
     "BrowserSignInAttempt",
@@ -36,4 +38,5 @@ __all__ = [
     "BrowserSignInStatusChanged",
     "HttpBrowserSignInGateway",
     "assess_auth_state",
+    "sign_out_account",
 ]

@@ -252,7 +252,7 @@ class TestCommandRegistry:
 
     def test_exit_command_accepts_bare_synonyms(self) -> None:
         registry = CommandRegistry()
-        for alias in ["/exit", "/logaut", "/logout", "exit", "quit", ":q", ":quit"]:
+        for alias in ["/exit", "exit", "quit", ":q", ":quit"]:
             assert registry.get_command_name(alias) == "exit", alias
             result = registry.parse_command(alias)
             assert result is not None, alias
@@ -260,6 +260,17 @@ class TestCommandRegistry:
             assert cmd_name == "exit"
             assert cmd.handler == "_exit_app"
             assert cmd.exits is True
+
+    def test_logout_command_signs_out_instead_of_exiting_directly(self) -> None:
+        registry = CommandRegistry()
+        for alias in ["/logout", "/logaut"]:
+            result = registry.parse_command(alias)
+            assert result is not None, alias
+            cmd_name, cmd, _ = result
+            assert cmd_name == "logout"
+            assert cmd.handler == "_logout_account"
+            assert cmd.exits is True
+            assert cmd.side_channel is False
 
     def test_bare_exit_synonym_with_trailing_text_is_not_a_command(self) -> None:
         registry = CommandRegistry()

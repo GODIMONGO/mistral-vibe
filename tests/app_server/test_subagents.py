@@ -150,7 +150,7 @@ async def test_run_many_bounds_parallelism_and_preserves_result_order(
     ]
 
     assert peak == 2
-    assert budgets == [32_768, 32_768, 32_768]
+    assert budgets == [8_192, 8_192, 8_192]
     assert events == [
         SwarmResult(
             results=[

@@ -211,7 +211,20 @@ _AUTONOMY_OBJECTIVE_MAX_CHARS = 6_000
 _AUTONOMY_REVIEW_EVIDENCE_MAX_CHARS = 8_000
 _AUTONOMY_DEPENDENCY_RESULT_MAX_CHARS = 2_000
 _AUTONOMY_DEPENDENCY_CONTEXT_MAX_CHARS = 6_000
+_AUTONOMY_STORED_RESULT_MAX_CHARS = 4_000
 _AUTONOMY_TASK_PASS_MARKER = "TASK_RESULT: PASS"
+
+
+def _compact_autonomy_text(content: str, max_chars: int, label: str) -> str:
+    if len(content) <= max_chars:
+        return content
+    marker = f"\n\n[... {label} omitted to save context ...]\n\n"
+    if max_chars <= len(marker):
+        return content[:max_chars]
+    available = max_chars - len(marker)
+    head_chars = available * 2 // 3
+    tail_chars = available - head_chars
+    return content[:head_chars] + marker + content[-tail_chars:]
 
 
 def _is_git_executable_available() -> bool:
@@ -2034,9 +2047,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             )
             return
 
-        bounded_objective = objective[:_AUTONOMY_OBJECTIVE_MAX_CHARS]
-        if len(objective) > len(bounded_objective):
-            bounded_objective += "\n[objective truncated for advisor]"
+        bounded_objective = _compact_autonomy_text(
+            objective, _AUTONOMY_OBJECTIVE_MAX_CHARS, "objective"
+        )
         args = TaskArgs(
             agent="goal-advisor",
             task=(
@@ -2284,15 +2297,23 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     and self._automatic_task_succeeded(event, result)
                 ):
                     succeeded.add(task.id)
-                    task_results[task.id] = result.response
+                    compact_result = _compact_autonomy_text(
+                        result.response,
+                        _AUTONOMY_STORED_RESULT_MAX_CHARS,
+                        "subagent result",
+                    )
+                    task_results[task.id] = compact_result
                     self._autonomy_evidence.append(
-                        f"{task.id} ({task.agent}): {result.response}"
+                        f"{task.id} ({task.agent}): {compact_result}"
                     )
             yield event
 
     async def _run_autonomy_reviewer(
         self, objective: str
     ) -> AsyncGenerator[BaseEvent, None]:
+        bounded_objective = _compact_autonomy_text(
+            objective, _AUTONOMY_OBJECTIVE_MAX_CHARS, "objective"
+        )
         args = TaskArgs(
             agent="reviewer",
             task=(
@@ -2303,7 +2324,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 "`EVIDENCE_CHECKED: <claim> => <specific evidence>` line. End with "
                 "VERDICT: PASS only if every material claim is proven; otherwise end "
                 "with VERDICT: FAIL and list precise remaining work.\n\n"
-                f"Goal:\n{objective}\n\nBounded execution evidence:\n"
+                f"Goal:\n{bounded_objective}\n\nBounded execution evidence:\n"
                 f"{self._bounded_autonomy_evidence()}"
             ),
         )
@@ -2355,6 +2376,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def _automatic_task_prompt(
         task: AutonomyPlanTask, objective: str, task_results: dict[str, str]
     ) -> str:
+        bounded_objective = _compact_autonomy_text(
+            objective, _AUTONOMY_OBJECTIVE_MAX_CHARS, "objective"
+        )
         dependency_evidence = "\n\n".join(
             f"Dependency {dependency}:\n"
             f"{task_results.get(dependency, '[no result]')[-_AUTONOMY_DEPENDENCY_RESULT_MAX_CHARS:]}"
@@ -2371,27 +2395,44 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             "and verification. If the task is actually complete, make the final "
             f"non-empty line exactly `{_AUTONOMY_TASK_PASS_MARKER}`. Otherwise end "
             "with `TASK_RESULT: FAIL` and explain the blocker.\n\n"
-            f"Goal:\n{objective}\n\nAssigned task ({task.id}):\n{task.content}"
+            f"Goal:\n{bounded_objective}\n\nAssigned task ({task.id}):\n{task.content}"
             f"{dependency_evidence}"
         )
 
     def _bounded_autonomy_evidence(self) -> str:
         evidence: list[str] = []
+        seen: set[str] = set()
+        used_chars = 0
+
+        def append_unique(item: str) -> bool:
+            nonlocal used_chars
+            normalized = item.strip()
+            if not normalized or normalized in seen:
+                return True
+            separator_chars = 2 if evidence else 0
+            remaining = (
+                _AUTONOMY_REVIEW_EVIDENCE_MAX_CHARS - used_chars - separator_chars
+            )
+            if remaining <= 0:
+                return False
+            compact = _compact_autonomy_text(normalized, remaining, "evidence")
+            evidence.append(compact)
+            seen.add(normalized)
+            used_chars += separator_chars + len(compact)
+            return used_chars < _AUTONOMY_REVIEW_EVIDENCE_MAX_CHARS
+
+        for item in reversed(self._autonomy_evidence):
+            if not append_unique(item):
+                break
         for message in reversed(self.messages):
             if message.role is not Role.tool or not message.content:
                 continue
-            evidence.append(f"{message.name or 'tool'}: {message.content}")
-            if (
-                sum(len(item) for item in evidence)
-                >= _AUTONOMY_REVIEW_EVIDENCE_MAX_CHARS
-            ):
+            if message.name == "task":
+                continue
+            if not append_unique(f"{message.name or 'tool'}: {message.content}"):
                 break
-        evidence.extend(reversed(self._autonomy_evidence))
         joined = "\n\n".join(evidence)
-        return (
-            joined[:_AUTONOMY_REVIEW_EVIDENCE_MAX_CHARS]
-            or "No execution evidence was recorded."
-        )
+        return joined or "No execution evidence was recorded."
 
     @staticmethod
     def _automatic_task_succeeded(event: ToolResultEvent, result: TaskResult) -> bool:

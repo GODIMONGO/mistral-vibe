@@ -401,6 +401,52 @@ async def test_autonomy_runs_reviewer_after_automatic_worker() -> None:
 
 
 @pytest.mark.asyncio
+async def test_autonomy_compacts_repeated_objective_and_stored_worker_result() -> None:
+    backend = FakeBackend([[mock_llm_chunk(content="Integrated automatic work")]])
+    config = build_test_vibe_config(
+        enabled_tools=["task", "todo"],
+        tools={
+            "task": {
+                "permission": "always",
+                "allowlist": ["goal-advisor", "reviewer", "worker"],
+            }
+        },
+        autonomy=AutonomyConfig(enabled=True, require_worker=True, require_review=True),
+    )
+    objective = "objective-start\n" + ("middle-context\n" * 1_000) + "objective-end"
+    worker_response = (
+        "result-start\n" + ("verbose-result\n" * 500) + "TASK_RESULT: PASS"
+    )
+    runner = _AdvisorRunner(
+        '<goal-plan>{"tasks":['
+        '{"id":"implement","content":"Implement and verify",'
+        '"agent":"worker","depends_on":[]}]}</goal-plan>',
+        worker_response=worker_response,
+    )
+    agent = build_test_agent_loop(config=config, backend=backend)
+
+    _ = [event async for event in agent.act(objective, subagent_runner=runner)]
+
+    assert [call.agent for call in runner.calls] == [
+        "goal-advisor",
+        "worker",
+        "reviewer",
+    ]
+    for call in runner.calls:
+        assert "objective-start" in call.task
+        assert "objective-end" in call.task
+        assert "[... objective omitted to save context ...]" in call.task
+    stored_result = agent._autonomy_task_results["implement"]
+    assert len(stored_result) <= 4_000
+    assert "result-start" in stored_result
+    assert stored_result.endswith("TASK_RESULT: PASS")
+    reviewer_prompt = runner.calls[-1].task
+    assert reviewer_prompt.count("implement (worker):") == 1
+    evidence = reviewer_prompt.split("Bounded execution evidence:\n", maxsplit=1)[1]
+    assert len(evidence) <= 8_000
+
+
+@pytest.mark.asyncio
 async def test_required_worker_replaces_an_all_explore_advisor_plan() -> None:
     backend = FakeBackend([[mock_llm_chunk(content="Integrated")]])
     config = build_test_vibe_config(

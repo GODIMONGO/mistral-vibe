@@ -522,7 +522,7 @@ def test_autonomy_defaults() -> None:
         max_review_retries=3,
         max_parallel_subagents=4,
         max_live_child_runtimes=8,
-        max_subagent_result_chars=32768,
+        max_subagent_result_chars=8192,
         require_worker=True,
         require_review=True,
     )

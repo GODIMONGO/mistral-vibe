@@ -208,11 +208,18 @@ goal_advisor_model = "devstral-small"
 reviewer_model = "devstral-small" # defaults to the advisor model
 max_parallel_subagents = 4        # 0 disables subagents; maximum 16
 max_live_child_runtimes = 8
-max_subagent_result_chars = 32768
+max_subagent_result_chars = 8192  # compact head+tail result retained in root context
 max_review_retries = 3
 require_worker = true
 require_review = true
 ```
+
+Vibe keeps autonomous runs token-efficient by compacting long objectives before
+reusing them across advisor, worker, and reviewer calls, deduplicating reviewer
+evidence, and retaining the useful head and final verdict of oversized subagent
+results. New models auto-compact at 100,000 context tokens by default; lower
+`auto_compact_threshold` per model when optimizing a long-running session for
+minimum repeated input.
 
 Run `/effort` to open the compact slider panel. Thinking (`off` through `max`)
 and the `0–16` subagent limit are independent. The UltraCode row applies maximum

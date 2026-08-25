@@ -82,7 +82,7 @@ class AutonomyConfig(BaseModel):
         default=4, ge=MIN_PARALLEL_SUBAGENTS, le=MAX_PARALLEL_SUBAGENTS
     )
     max_live_child_runtimes: int = Field(default=8, ge=1, le=64)
-    max_subagent_result_chars: int = Field(default=32768, ge=1024)
+    max_subagent_result_chars: int = Field(default=8192, ge=1024)
     require_worker: bool = True
     require_review: bool = True
 

@@ -73,7 +73,7 @@ class SubagentRunnerPort(Protocol):
     ) -> AsyncGenerator[ToolStreamEvent | SwarmResult, None]: ...
 
 
-DEFAULT_SUBAGENT_RESULT_MAX_CHARS = 32_768
+DEFAULT_SUBAGENT_RESULT_MAX_CHARS = 8_192
 MIN_SUBAGENT_RESULT_MAX_CHARS = 1_024
 SUBAGENT_TRUNCATION_MARKER = "\n\n[... subagent response truncated ...]\n\n"
 

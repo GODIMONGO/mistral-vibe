@@ -14,7 +14,13 @@ from vibe.core.agents.models import (
     AgentSafety,
     AgentType,
 )
-from vibe.core.config import AutonomyConfig, ModelConfig, VibeConfigSchema
+from vibe.core.agents.registry import apply_profile_overrides
+from vibe.core.config import (
+    AutonomyAggressiveness,
+    AutonomyConfig,
+    ModelConfig,
+    VibeConfigSchema,
+)
 
 
 class TestAgentProfile:
@@ -204,6 +210,61 @@ class TestAgentManager:
         )
 
         assert manager.config.get_active_model().alias == expected_alias
+        assert manager.config.system_prompt_id in {"advisor", "reviewer"}
+        assert manager.config.enabled_tools == ["grep", "read_file", "skill"]
+
+    def test_autonomous_profile_preserves_configured_autonomy_settings(
+        self,
+        build_config: ConfigBuilder,
+        load_orchestrator: OrchestratorLoader[VibeConfigSchema],
+    ) -> None:
+        autonomy = AutonomyConfig(
+            enabled=False,
+            aggressiveness=AutonomyAggressiveness.MAX,
+            goal_advisor_model="advisor",
+            reviewer_model="reviewer",
+            max_parallel_subagents=7,
+        )
+        config = build_config(
+            models=[
+                ModelConfig(name="main", alias="main", provider="mistral"),
+                ModelConfig(name="advisor", alias="advisor", provider="mistral"),
+                ModelConfig(name="reviewer", alias="reviewer", provider="mistral"),
+            ],
+            autonomy=autonomy,
+        )
+
+        manager = AgentManager(load_orchestrator(config), initial_agent="autonomous")
+
+        assert manager.config.autonomy.enabled is True
+        assert manager.config.autonomy.aggressiveness == autonomy.aggressiveness
+        assert manager.config.autonomy.goal_advisor_model == "advisor"
+        assert manager.config.autonomy.reviewer_model == "reviewer"
+        assert manager.config.autonomy.max_parallel_subagents == 7
+
+    def test_switching_to_autonomous_discards_previous_profile_autonomy(
+        self,
+        build_config: ConfigBuilder,
+        load_orchestrator: OrchestratorLoader[VibeConfigSchema],
+    ) -> None:
+        autonomy = AutonomyConfig(
+            enabled=False,
+            aggressiveness=AutonomyAggressiveness.MAX,
+            max_parallel_subagents=7,
+            require_review=True,
+        )
+        orchestrator = load_orchestrator(build_config(autonomy=autonomy))
+        manager = AgentManager(orchestrator)
+        apply_profile_overrides(
+            orchestrator, {"autonomy": {"enabled": True, "require_review": False}}
+        )
+
+        manager.switch_profile("autonomous")
+
+        assert manager.config.autonomy.enabled is True
+        assert manager.config.autonomy.aggressiveness == autonomy.aggressiveness
+        assert manager.config.autonomy.max_parallel_subagents == 7
+        assert manager.config.autonomy.require_review is True
 
     def test_initial_agent_raises_when_agent_is_disabled(
         self,

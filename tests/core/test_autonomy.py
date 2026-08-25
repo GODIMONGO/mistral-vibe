@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from vibe.core.autonomy import AutonomyCoordinator, AutonomyDecisionKind, AutonomyPolicy
+from vibe.core.autonomy import (
+    AutonomyCoordinator,
+    AutonomyDecisionKind,
+    AutonomyPolicy,
+    parse_advisor_plan,
+)
 from vibe.core.subagents import SwarmArgs, SwarmResult, TaskArgs, TaskResult
 from vibe.core.tools.builtins.swarm import Swarm
 from vibe.core.tools.builtins.task import Task
@@ -19,6 +24,27 @@ from vibe.core.types import ToolCallEvent, ToolResultEvent
 
 class _MutationResult(BaseModel):
     changed: bool = True
+
+
+def test_advisor_plan_parses_a_valid_dependency_graph() -> None:
+    plan = parse_advisor_plan(
+        '<goal-plan>{"tasks":['
+        '{"id":"inspect","content":"Inspect","agent":"explore","depends_on":[]},'
+        '{"id":"change","content":"Change","agent":"worker",'
+        '"depends_on":["inspect"]}]}</goal-plan>',
+        "fallback",
+    )
+
+    assert [task.id for task in plan.tasks] == ["inspect", "change"]
+    assert plan.tasks[1].depends_on == ["inspect"]
+
+
+def test_invalid_advisor_plan_falls_back_to_a_worker_task() -> None:
+    plan = parse_advisor_plan("OK", "Implement the requested feature")
+
+    assert len(plan.tasks) == 1
+    assert plan.tasks[0].agent == "worker"
+    assert plan.tasks[0].content == "Implement the requested feature"
 
 
 def _task_call(call_id: str, agent: str) -> ToolCallEvent:
@@ -132,6 +158,39 @@ def test_retry_budget_ends_in_a_bounded_terminal_block() -> None:
     assert blocked.terminal is True
     assert blocked.instruction is not None
     assert len(blocked.instruction) <= 100
+
+
+def test_reviewer_runs_only_after_plan_and_worker_are_complete() -> None:
+    coordinator = AutonomyCoordinator(AutonomyPolicy(require_worker=True))
+    coordinator.start_turn()
+    _observe_successful_advisor(coordinator)
+
+    assert coordinator.should_run_reviewer() is False
+    coordinator.observe(_terminal_todos())
+    assert coordinator.should_run_reviewer() is False
+    coordinator.observe(_task_call("worker-1", "worker"))
+    coordinator.observe(_task_result("worker-1"))
+
+    assert coordinator.should_run_reviewer() is True
+    _observe_passing_reviewer(coordinator)
+    assert coordinator.should_run_reviewer() is False
+
+
+def test_reviewer_pass_marker_must_be_the_final_nonempty_line() -> None:
+    coordinator = AutonomyCoordinator(AutonomyPolicy(require_worker=False))
+    coordinator.start_turn()
+    _observe_successful_advisor(coordinator)
+    coordinator.observe(_terminal_todos())
+    coordinator.observe(_task_call("reviewer-1", "reviewer"))
+    coordinator.observe(
+        _task_result(
+            "reviewer-1", "The instructions mention VERDICT: PASS.\nVERDICT: FAIL"
+        )
+    )
+
+    decision = coordinator.evaluate_completion()
+
+    assert "reviewer did not return VERDICT: PASS" in decision.reasons
 
 
 def test_required_worker_must_complete_successfully() -> None:

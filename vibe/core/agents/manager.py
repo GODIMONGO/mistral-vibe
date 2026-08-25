@@ -14,6 +14,7 @@ from vibe.core.config.harness_files import (
     HarnessFilesManager,
     get_harness_files_manager,
 )
+from vibe.core.config.layers.agent_profile import AgentProfileLayer
 from vibe.core.config.orchestrator import ConfigOrchestrator
 from vibe.core.utils import name_matches
 from vibe.observability.logging import logger
@@ -87,21 +88,44 @@ class AgentManager:
 
     def preview_config(self, name: str) -> VibeConfigSchema:
         candidate = self._orchestrator.copy()
-        apply_profile_overrides(candidate, self.get_agent(name).overrides)
+        profile = self.get_agent(name)
+        apply_profile_overrides(candidate, self._resolved_profile_overrides(profile))
         return candidate.config
 
     def _install_profile(self, profile: AgentProfile) -> None:
-        apply_profile_overrides(self._orchestrator, profile.overrides)
-        role_model = self._role_model_alias(profile)
-        if role_model:
-            apply_profile_overrides(self._orchestrator, {"active_model": role_model})
+        apply_profile_overrides(
+            self._orchestrator, self._resolved_profile_overrides(profile)
+        )
 
-    def _role_model_alias(self, profile: AgentProfile) -> str:
+    def _resolved_profile_overrides(self, profile: AgentProfile) -> dict[str, object]:
+        base_config = self._config_without_active_profile()
+        overrides: dict[str, object] = dict(profile.overrides)
+        if autonomy_override := overrides.get("autonomy"):
+            if isinstance(autonomy_override, dict):
+                autonomy = base_config.autonomy.model_dump(mode="python")
+                autonomy.update(autonomy_override)
+                overrides["autonomy"] = autonomy
+        role_model = self._role_model_alias(profile, base_config)
+        if role_model:
+            overrides["active_model"] = role_model
+        return overrides
+
+    def _config_without_active_profile(self) -> VibeConfigSchema:
+        candidate = self._orchestrator.copy()
+        for index, layer in enumerate(candidate.layers):
+            if layer.name == AgentProfileLayer.NAME:
+                candidate.remove_layer(index)
+                candidate.rebuild()
+                break
+        return candidate.config
+
+    @staticmethod
+    def _role_model_alias(profile: AgentProfile, config: VibeConfigSchema) -> str:
         match profile.name:
             case BuiltinAgentName.GOAL_ADVISOR:
-                return self.config.resolve_goal_advisor_model().alias
+                return config.resolve_goal_advisor_model().alias
             case BuiltinAgentName.REVIEWER:
-                return self.config.resolve_reviewer_model().alias
+                return config.resolve_reviewer_model().alias
             case _:
                 return ""
 

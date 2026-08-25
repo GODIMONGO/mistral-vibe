@@ -26,7 +26,14 @@ from vibe.core.agent_loop_hooks import AgentLoopHooksMixin, PostToolFinalization
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
 from vibe.core.autocompletion.path_prompt import build_path_prompt_payload
-from vibe.core.autonomy import AutonomyCoordinator, AutonomyDecisionKind, AutonomyPolicy
+from vibe.core.autonomy import (
+    AutonomyCoordinator,
+    AutonomyDecisionKind,
+    AutonomyPlan,
+    AutonomyPlanTask,
+    AutonomyPolicy,
+    parse_advisor_plan,
+)
 from vibe.core.checkpoints import Checkpointer, CheckpointRecorder, FileStore
 from vibe.core.compaction import (
     CompactionFailedError as CompactionFailedError,
@@ -127,6 +134,7 @@ from vibe.core.tools.builtins.skill import (
     select_skill_result,
     skill_content_marker,
 )
+from vibe.core.tools.builtins.todo import TodoArgs, TodoItem, TodoResult, TodoStatus
 from vibe.core.tools.io_port import ToolIOPort
 from vibe.core.tools.manager import NoSuchToolError, ToolManager
 from vibe.core.tools.permissions import (
@@ -199,6 +207,10 @@ from vibe.utils.cache_store import CacheStore, InMemoryCacheStore
 from vibe.utils.http import get_server_url_from_api_base, get_user_agent
 
 _AUTONOMY_OBJECTIVE_MAX_CHARS = 6_000
+_AUTONOMY_REVIEW_EVIDENCE_MAX_CHARS = 8_000
+_AUTONOMY_DEPENDENCY_RESULT_MAX_CHARS = 2_000
+_AUTONOMY_DEPENDENCY_CONTEXT_MAX_CHARS = 6_000
+_AUTONOMY_TASK_PASS_MARKER = "TASK_RESULT: PASS"
 
 
 def _is_git_executable_available() -> bool:
@@ -589,6 +601,17 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._is_user_prompt_call: bool = False
         self._reactive_recovery_used: bool = False
         self._autonomy_advisor_completed: bool = False
+        self._autonomy_bootstrap_blocked: bool = False
+        self._autonomy_coordinator: AutonomyCoordinator | None = None
+        self._autonomy_evidence: list[str] = []
+        self._autonomy_objective: str = ""
+        self._autonomy_plan: AutonomyPlan | None = None
+        self._autonomy_todos: list[TodoItem] = []
+        self._autonomy_completed_tasks: set[str] = set()
+        self._autonomy_task_results: dict[str, str] = {}
+        self._autonomy_scheduler_needs_resume: bool = False
+        self._automatic_todo_write_succeeded: bool = False
+        self._automatic_wave_progressed: bool = False
         self._pending_injected_messages: list[LLMMessage] = []
         self._pending_clear_context: bool = False
 
@@ -1730,9 +1753,14 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         coordinator.start_turn()
         return coordinator
 
-    def _prepare_autonomy_turn(self) -> AutonomyCoordinator | None:
+    def _prepare_autonomy_turn(self, *, injected: bool) -> AutonomyCoordinator | None:
         self._reactive_recovery_used = False
-        return self._new_autonomy_coordinator()
+        self._autonomy_bootstrap_blocked = False
+        if injected and self._autonomy_coordinator is not None:
+            return self._autonomy_coordinator
+        self._autonomy_evidence = []
+        self._autonomy_coordinator = self._new_autonomy_coordinator()
+        return self._autonomy_coordinator
 
     def _build_backend_metadata(
         self, call_type: TelemetryCallType | None = None
@@ -1852,11 +1880,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             yield event
 
         try:
-            autonomy = self._prepare_autonomy_turn()
+            autonomy = self._prepare_autonomy_turn(injected=injected)
             async for event in self._bootstrap_autonomy(
                 autonomy, user_msg, injected=injected
             ):
                 yield event
+            if self._autonomy_bootstrap_blocked:
+                return
             should_break_loop = False
             first_llm_turn = True
             while not should_break_loop:
@@ -1915,6 +1945,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         yield hook_event
                     should_break_loop = self._queue_post_turn_retry(retry_msg)
                     if should_break_loop and autonomy is not None:
+                        async for event in self._maybe_run_autonomy_reviewer(
+                            autonomy, self._autonomy_objective or user_msg
+                        ):
+                            yield event
                         should_break_loop, blocked_event = (
                             self._apply_autonomy_completion(autonomy)
                         )
@@ -1931,23 +1965,50 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if coordinator is None:
             return
         if injected and self._autonomy_advisor_completed:
-            coordinator.seed_advisor_completed()
+            if (
+                self._autonomy_scheduler_needs_resume
+                and self._autonomy_plan is not None
+            ):
+                async for event in self._run_automatic_autonomy_plan(
+                    self._autonomy_plan,
+                    self._autonomy_objective or objective,
+                    resume=True,
+                ):
+                    coordinator.observe(event)
+                    yield event
             return
         if not injected:
             self._autonomy_advisor_completed = False
+            self._autonomy_objective = objective
         async for event in self._run_autonomy_advisor(objective):
             coordinator.observe(event)
             yield event
+        if not self._autonomy_advisor_completed:
+            self._autonomy_bootstrap_blocked = True
 
     async def _run_autonomy_advisor(
         self, objective: str
     ) -> AsyncGenerator[BaseEvent, None]:
         active_turn = self._active_turn
         if active_turn is None or active_turn.subagent_runner is None:
+            yield AssistantEvent(
+                content=(
+                    "Autonomous planning stopped: the subagent runtime is unavailable, "
+                    "so Vibe cannot run the required goal advisor."
+                ),
+                stopped_by_middleware=True,
+            )
             return
         try:
             tool_instance = self.tool_manager.get("task")
         except NoSuchToolError:
+            yield AssistantEvent(
+                content=(
+                    "Autonomous planning stopped: the task tool is unavailable, so "
+                    "Vibe cannot launch the required goal advisor or workers."
+                ),
+                stopped_by_middleware=True,
+            )
             return
 
         bounded_objective = objective[:_AUTONOMY_OBJECTIVE_MAX_CHARS]
@@ -1988,13 +2049,16 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 )
             ]
         )
-        advisor_completed = False
+        advisor_result: TaskResult | None = None
         async for event in self._handle_tool_calls(resolved):
-            if self._advisor_succeeded(event, call_id):
-                advisor_completed = True
+            if isinstance(event, ToolResultEvent) and self._advisor_succeeded(
+                event, call_id
+            ):
+                if isinstance(event.result, TaskResult):
+                    advisor_result = event.result
             yield event
 
-        if not advisor_completed:
+        if advisor_result is None:
             self.messages.append(
                 LLMMessage(
                     role=Role.user,
@@ -2005,23 +2069,390 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     ),
                 )
             )
+            yield AssistantEvent(
+                content=(
+                    "Autonomous planning stopped: the goal advisor did not complete "
+                    "successfully. Check the advisor model/API access and retry."
+                ),
+                stopped_by_middleware=True,
+            )
             return
 
         self._autonomy_advisor_completed = True
+        plan = parse_advisor_plan(advisor_result.response, objective)
+        if self.config.autonomy.require_worker and not any(
+            task.agent == "worker" for task in plan.tasks
+        ):
+            plan = parse_advisor_plan("", objective)
+        async for event in self._run_automatic_autonomy_plan(plan, objective):
+            yield event
+        if self._autonomy_bootstrap_blocked:
+            return
         self.messages.append(
             LLMMessage(
                 role=Role.user,
                 injected=True,
                 content=(
-                    "The goal advisor has completed. Immediately materialize its "
-                    "dependency graph with the todo tool, including depends_on for "
-                    "each task. In the same tool-call batch, delegate every ready "
-                    "independent task to an appropriate worker or explore subagent. "
-                    "Keep dependent tasks ordered, integrate all results, collect "
-                    "fresh evidence after mutations, and run the reviewer last."
+                    "The goal advisor plan was materialized and its ready tasks were "
+                    "automatically delegated. Integrate the subagent results, resolve "
+                    "any remaining todo, collect fresh evidence after mutations, and "
+                    "finish only after the automatic reviewer passes."
                 ),
             )
         )
+
+    async def _run_automatic_autonomy_plan(
+        self, plan: AutonomyPlan, objective: str, *, resume: bool = False
+    ) -> AsyncGenerator[BaseEvent, None]:
+        if not self._autonomy_tools_available(("todo", "task")):
+            self._autonomy_bootstrap_blocked = True
+            self._autonomy_advisor_completed = False
+            self.messages.append(
+                LLMMessage(
+                    role=Role.user,
+                    injected=True,
+                    content=(
+                        "Automatic planning could not start because the todo or task "
+                        "tool is unavailable. Restore both tools before completion."
+                    ),
+                )
+            )
+            yield AssistantEvent(
+                content=(
+                    "Autonomous planning stopped: the todo or task tool is unavailable, "
+                    "so Vibe cannot publish the plan and delegate its work."
+                ),
+                stopped_by_middleware=True,
+            )
+            return
+
+        if not resume:
+            self._autonomy_plan = plan
+            self._autonomy_todos = plan.to_todos()
+            self._autonomy_completed_tasks = set()
+            self._autonomy_task_results = {}
+        todos = self._autonomy_todos
+        async for event in self._write_automatic_todos(todos):
+            yield event
+        if not self._automatic_todo_write_succeeded:
+            self._autonomy_bootstrap_blocked = True
+            self._autonomy_advisor_completed = False
+            yield self._autonomy_plan_write_failure("initial")
+            return
+
+        completed = self._autonomy_completed_tasks
+        while len(completed) < len(plan.tasks):
+            selected = self._select_automatic_plan_tasks(plan, todos, completed)
+            if not selected:
+                break
+            async for event in self._run_automatic_autonomy_wave(selected, objective):
+                yield event
+            if self._autonomy_bootstrap_blocked:
+                return
+            if not self._automatic_wave_progressed:
+                break
+            todos = self._autonomy_todos
+        self._autonomy_scheduler_needs_resume = len(completed) < len(plan.tasks)
+
+    async def _run_automatic_autonomy_wave(
+        self, selected: list[AutonomyPlanTask], objective: str
+    ) -> AsyncGenerator[BaseEvent, None]:
+        self._automatic_wave_progressed = False
+        selected_ids = {task.id for task in selected}
+        todos = self._todos_with_status(selected_ids, TodoStatus.IN_PROGRESS)
+        self._autonomy_todos = todos
+        async for event in self._write_automatic_todos(todos):
+            yield event
+        if not self._automatic_todo_write_succeeded:
+            self._autonomy_bootstrap_blocked = True
+            self._autonomy_advisor_completed = False
+            yield self._autonomy_plan_write_failure("in-progress")
+            return
+
+        args = [
+            TaskArgs(
+                agent=task.agent,
+                task=self._automatic_task_prompt(
+                    task, objective, self._autonomy_task_results
+                ),
+            )
+            for task in selected
+        ]
+        batch = self._build_automatic_tool_batch("task", args)
+        if batch is None:
+            return
+        resolved, call_ids = batch
+        task_by_call = dict(zip(call_ids, selected, strict=True))
+        succeeded: set[str] = set()
+        try:
+            async for event in self._run_automatic_task_batch(
+                resolved, task_by_call, succeeded, self._autonomy_task_results
+            ):
+                yield event
+        except asyncio.CancelledError:
+            self._autonomy_todos = self._todos_with_status(
+                selected_ids, TodoStatus.PENDING
+            )
+            self._autonomy_scheduler_needs_resume = True
+            async for event in self._write_automatic_todos(self._autonomy_todos):
+                yield event
+            raise
+        except GeneratorExit:
+            self._autonomy_todos = self._todos_with_status(
+                selected_ids, TodoStatus.PENDING
+            )
+            self._autonomy_scheduler_needs_resume = True
+            raise
+
+        self._autonomy_todos = self._todos_with_outcomes(selected_ids, succeeded)
+        self._autonomy_completed_tasks.update(succeeded)
+        async for event in self._write_automatic_todos(self._autonomy_todos):
+            yield event
+        if not self._automatic_todo_write_succeeded:
+            self._autonomy_bootstrap_blocked = True
+            self._autonomy_scheduler_needs_resume = True
+            yield self._autonomy_plan_write_failure("terminal")
+            return
+        self._automatic_wave_progressed = succeeded == selected_ids
+
+    def _todos_with_status(
+        self, task_ids: set[str], status: TodoStatus
+    ) -> list[TodoItem]:
+        return [
+            todo.model_copy(update={"status": status}) if todo.id in task_ids else todo
+            for todo in self._autonomy_todos
+        ]
+
+    def _todos_with_outcomes(
+        self, selected_ids: set[str], succeeded: set[str]
+    ) -> list[TodoItem]:
+        return [
+            todo.model_copy(
+                update={
+                    "status": (
+                        TodoStatus.COMPLETED
+                        if todo.id in succeeded
+                        else TodoStatus.PENDING
+                    )
+                }
+            )
+            if todo.id in selected_ids
+            else todo
+            for todo in self._autonomy_todos
+        ]
+
+    async def _run_automatic_task_batch(
+        self,
+        resolved: ResolvedMessage,
+        task_by_call: dict[str, AutonomyPlanTask],
+        succeeded: set[str],
+        task_results: dict[str, str],
+    ) -> AsyncGenerator[BaseEvent, None]:
+        async for event in self._handle_tool_calls(resolved):
+            if isinstance(event, ToolResultEvent):
+                task = task_by_call.get(event.tool_call_id)
+                result = event.result
+                if (
+                    task is not None
+                    and isinstance(result, TaskResult)
+                    and self._automatic_task_succeeded(event, result)
+                ):
+                    succeeded.add(task.id)
+                    task_results[task.id] = result.response
+                    self._autonomy_evidence.append(
+                        f"{task.id} ({task.agent}): {result.response}"
+                    )
+            yield event
+
+    async def _run_autonomy_reviewer(
+        self, objective: str
+    ) -> AsyncGenerator[BaseEvent, None]:
+        args = TaskArgs(
+            agent="reviewer",
+            task=(
+                "Review the current workspace and fresh evidence for this autonomous "
+                "goal. Check every acceptance criterion and todo result. End with "
+                "VERDICT: PASS only if the goal is fully proven; otherwise end with "
+                "VERDICT: FAIL and list precise remaining work.\n\n"
+                f"Goal:\n{objective}\n\nBounded execution evidence:\n"
+                f"{self._bounded_autonomy_evidence()}"
+            ),
+        )
+        batch = self._build_automatic_tool_batch("task", [args])
+        if batch is None:
+            yield AssistantEvent(
+                content=(
+                    "Autonomous review could not start because the task tool is "
+                    "unavailable. Completion remains blocked until review can run."
+                ),
+                stopped_by_middleware=True,
+            )
+            return
+        resolved, _ = batch
+        async for event in self._handle_tool_calls(resolved):
+            yield event
+
+    async def _maybe_run_autonomy_reviewer(
+        self, coordinator: AutonomyCoordinator | None, objective: str
+    ) -> AsyncGenerator[BaseEvent, None]:
+        if coordinator is None or not coordinator.should_run_reviewer():
+            return
+        async for event in self._run_autonomy_reviewer(objective):
+            coordinator.observe(event)
+            yield event
+
+    def _select_automatic_plan_tasks(
+        self, plan: AutonomyPlan, todos: list[TodoItem], completed: set[str]
+    ) -> list[AutonomyPlanTask]:
+        ready = [
+            task
+            for task in plan.tasks
+            if task.id not in completed
+            and all(dependency in completed for dependency in task.depends_on)
+            and self._todo_status(todos, task.id) is TodoStatus.PENDING
+        ]
+        if not ready:
+            return []
+        limit = self.config.autonomy.effective_parallel_subagents
+        selected = [task for task in ready if task.agent == "explore"][:limit]
+        if selected:
+            return selected
+        return [next(task for task in ready if task.agent == "worker")]
+
+    @staticmethod
+    def _automatic_task_prompt(
+        task: AutonomyPlanTask, objective: str, task_results: dict[str, str]
+    ) -> str:
+        dependency_evidence = "\n\n".join(
+            f"Dependency {dependency}:\n"
+            f"{task_results.get(dependency, '[no result]')[-_AUTONOMY_DEPENDENCY_RESULT_MAX_CHARS:]}"
+            for dependency in task.depends_on
+        )
+        dependency_evidence = dependency_evidence[
+            -_AUTONOMY_DEPENDENCY_CONTEXT_MAX_CHARS:
+        ]
+        if dependency_evidence:
+            dependency_evidence = f"\n\nDependency results:\n{dependency_evidence}"
+        return (
+            "Complete this assigned part of the autonomous goal. Work only within "
+            "this scope, respect repository instructions, and report concrete changes "
+            "and verification. If the task is actually complete, make the final "
+            f"non-empty line exactly `{_AUTONOMY_TASK_PASS_MARKER}`. Otherwise end "
+            "with `TASK_RESULT: FAIL` and explain the blocker.\n\n"
+            f"Goal:\n{objective}\n\nAssigned task ({task.id}):\n{task.content}"
+            f"{dependency_evidence}"
+        )
+
+    def _bounded_autonomy_evidence(self) -> str:
+        evidence: list[str] = []
+        for message in reversed(self.messages):
+            if message.role is not Role.tool or not message.content:
+                continue
+            evidence.append(f"{message.name or 'tool'}: {message.content}")
+            if (
+                sum(len(item) for item in evidence)
+                >= _AUTONOMY_REVIEW_EVIDENCE_MAX_CHARS
+            ):
+                break
+        evidence.extend(reversed(self._autonomy_evidence))
+        joined = "\n\n".join(evidence)
+        return (
+            joined[:_AUTONOMY_REVIEW_EVIDENCE_MAX_CHARS]
+            or "No execution evidence was recorded."
+        )
+
+    @staticmethod
+    def _automatic_task_succeeded(event: ToolResultEvent, result: TaskResult) -> bool:
+        lines = [line.strip() for line in result.response.splitlines() if line.strip()]
+        return (
+            result.completed
+            and not (event.error or event.cancelled or event.skipped)
+            and bool(lines)
+            and lines[-1] == _AUTONOMY_TASK_PASS_MARKER
+        )
+
+    @staticmethod
+    def _autonomy_plan_write_failure(stage: str) -> AssistantEvent:
+        return AssistantEvent(
+            content=(
+                f"Autonomous planning stopped: the {stage} todo update failed. "
+                "No further worker tasks will be launched with an untracked plan."
+            ),
+            stopped_by_middleware=True,
+        )
+
+    def _autonomy_tools_available(self, names: Sequence[str]) -> bool:
+        try:
+            for name in names:
+                self.tool_manager.get(name)
+        except NoSuchToolError:
+            return False
+        return True
+
+    def _build_automatic_tool_batch(
+        self, tool_name: str, args: Sequence[BaseModel]
+    ) -> tuple[ResolvedMessage, list[str]] | None:
+        try:
+            tool_instance = self.tool_manager.get(tool_name)
+        except NoSuchToolError:
+            return None
+        call_ids = [str(uuid4()) for _ in args]
+        self.messages.append(
+            LLMMessage(
+                role=Role.assistant,
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id=call_id,
+                        index=index,
+                        function=FunctionCall(
+                            name=tool_name, arguments=tool_args.model_dump_json()
+                        ),
+                    )
+                    for index, (call_id, tool_args) in enumerate(
+                        zip(call_ids, args, strict=True)
+                    )
+                ],
+            )
+        )
+        return (
+            ResolvedMessage(
+                tool_calls=[
+                    ResolvedToolCall(
+                        tool_name=tool_name,
+                        tool_class=type(tool_instance),
+                        validated_args=tool_args,
+                        call_id=call_id,
+                    )
+                    for call_id, tool_args in zip(call_ids, args, strict=True)
+                ]
+            ),
+            call_ids,
+        )
+
+    async def _write_automatic_todos(
+        self, todos: list[TodoItem]
+    ) -> AsyncGenerator[BaseEvent, None]:
+        self._automatic_todo_write_succeeded = False
+        self._automatic_wave_progressed = False
+        batch = self._build_automatic_tool_batch(
+            "todo", [TodoArgs(action="write", todos=todos)]
+        )
+        if batch is None:
+            return
+        resolved, _ = batch
+        async for event in self._handle_tool_calls(resolved):
+            if (
+                isinstance(event, ToolResultEvent)
+                and isinstance(event.result, TodoResult)
+                and not (event.error or event.cancelled or event.skipped)
+            ):
+                self._automatic_todo_write_succeeded = True
+            yield event
+
+    @staticmethod
+    def _todo_status(todos: list[TodoItem], task_id: str) -> TodoStatus:
+        return next(todo.status for todo in todos if todo.id == task_id)
 
     @staticmethod
     def _advisor_succeeded(event: BaseEvent, call_id: str) -> bool:
@@ -3336,6 +3767,16 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._is_user_prompt_call = False
         self._reactive_recovery_used = False
         self._autonomy_advisor_completed = False
+        self._autonomy_bootstrap_blocked = False
+        self._autonomy_coordinator = None
+        self._autonomy_evidence = []
+        self._autonomy_objective = ""
+        self._autonomy_plan = None
+        self._autonomy_todos = []
+        self._autonomy_completed_tasks = set()
+        self._autonomy_task_results = {}
+        self._autonomy_scheduler_needs_resume = False
+        self._automatic_todo_write_succeeded = False
         if not self._is_subagent:
             self._model_failover_state.reset()
 

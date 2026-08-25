@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum, auto
+import json
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from vibe.core.subagents import SwarmArgs, SwarmResult, TaskArgs, TaskResult
-from vibe.core.tools.builtins.todo import TodoResult, TodoStatus
+from vibe.core.tools.builtins.todo import TodoItem, TodoResult, TodoStatus
 from vibe.core.tools.ui import ToolUIDataAdapter
 from vibe.core.types import BaseEvent, ToolCallEvent, ToolResultEvent
 from vibe.utils.tool_presentation import ToolEffectKind
@@ -13,6 +16,10 @@ GOAL_ADVISOR_AGENT = "goal-advisor"
 REVIEWER_AGENT = "reviewer"
 WORKER_AGENT = "worker"
 REVIEW_PASS_MARKER = "VERDICT: PASS"
+AUTONOMY_PLAN_START = "<goal-plan>"
+AUTONOMY_PLAN_END = "</goal-plan>"
+MAX_AUTOMATIC_PLAN_TASKS = 16
+MAX_AUTOMATIC_TASK_CHARS = 2_000
 _MIN_INSTRUCTION_CHARS = 80
 
 _MUTATION_EFFECTS = frozenset({
@@ -21,6 +28,81 @@ _MUTATION_EFFECTS = frozenset({
     ToolEffectKind.SHELL,
     ToolEffectKind.WORKTREE,
 })
+
+
+class AutonomyPlanTask(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+    content: str = Field(min_length=1, max_length=MAX_AUTOMATIC_TASK_CHARS)
+    agent: str = Field(pattern=r"^(explore|worker)$")
+    depends_on: list[str] = Field(default_factory=list)
+
+
+class AutonomyPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tasks: list[AutonomyPlanTask] = Field(
+        min_length=1, max_length=MAX_AUTOMATIC_PLAN_TASKS
+    )
+
+    @model_validator(mode="after")
+    def validate_graph(self) -> AutonomyPlan:
+        ids = [task.id for task in self.tasks]
+        if len(ids) != len(set(ids)):
+            raise ValueError("plan task IDs must be unique")
+        known = set(ids)
+        graph = {task.id: task.depends_on for task in self.tasks}
+        for task in self.tasks:
+            if task.id in task.depends_on:
+                raise ValueError(f"plan task '{task.id}' cannot depend on itself")
+            if unknown := set(task.depends_on) - known:
+                names = ", ".join(sorted(unknown))
+                raise ValueError(
+                    f"plan task '{task.id}' has unknown dependencies: {names}"
+                )
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(task_id: str) -> None:
+            if task_id in visiting:
+                raise ValueError("plan dependency graph contains a cycle")
+            if task_id in visited:
+                return
+            visiting.add(task_id)
+            for dependency in graph[task_id]:
+                visit(dependency)
+            visiting.remove(task_id)
+            visited.add(task_id)
+
+        for task_id in graph:
+            visit(task_id)
+        return self
+
+    def to_todos(self) -> list[TodoItem]:
+        return [
+            TodoItem(id=task.id, content=task.content, depends_on=task.depends_on)
+            for task in self.tasks
+        ]
+
+
+def parse_advisor_plan(response: str, objective: str) -> AutonomyPlan:
+    start = response.find(AUTONOMY_PLAN_START)
+    end = response.find(AUTONOMY_PLAN_END, start + len(AUTONOMY_PLAN_START))
+    if start >= 0 and end > start:
+        payload = response[start + len(AUTONOMY_PLAN_START) : end].strip()
+        try:
+            return AutonomyPlan.model_validate(json.loads(payload))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    fallback = objective.strip()[:MAX_AUTOMATIC_TASK_CHARS]
+    if not fallback:
+        fallback = "Complete and verify the user's objective"
+    return AutonomyPlan(
+        tasks=[AutonomyPlanTask(id="execute-goal", content=fallback, agent="worker")]
+    )
 
 
 class AutonomyDecisionKind(StrEnum):
@@ -140,6 +222,22 @@ class AutonomyCoordinator:
             reasons=reasons,
         )
 
+    def should_run_reviewer(self) -> bool:
+        if not self.policy.require_review or not self._advisor_completed:
+            return False
+        if self._todos is None or not self._todos.todos:
+            return False
+        if any(
+            todo.status not in {TodoStatus.COMPLETED, TodoStatus.CANCELLED}
+            for todo in self._todos.todos
+        ):
+            return False
+        if self.policy.require_worker and not self._worker_completed:
+            return False
+        return not self._reviewer_passed or (
+            self._reviewer_sequence <= self._latest_required_sequence
+        )
+
     def _observe_call(self, event: ToolCallEvent) -> None:
         if isinstance(event.args, TaskArgs):
             self._task_calls[event.tool_call_id] = _TaskCall(
@@ -197,7 +295,12 @@ class AutonomyCoordinator:
                 self._reviewer_passed = False
             case "reviewer":
                 self._reviewer_sequence = call_sequence
-                self._reviewer_passed = REVIEW_PASS_MARKER in result.response
+                lines = [
+                    line.strip()
+                    for line in result.response.splitlines()
+                    if line.strip()
+                ]
+                self._reviewer_passed = bool(lines) and lines[-1] == REVIEW_PASS_MARKER
 
     @staticmethod
     def _result_succeeded(event: ToolResultEvent) -> bool:
@@ -233,6 +336,8 @@ class AutonomyCoordinator:
 
 
 __all__ = [
+    "AUTONOMY_PLAN_END",
+    "AUTONOMY_PLAN_START",
     "GOAL_ADVISOR_AGENT",
     "REVIEWER_AGENT",
     "REVIEW_PASS_MARKER",
@@ -240,5 +345,8 @@ __all__ = [
     "AutonomyCoordinator",
     "AutonomyDecision",
     "AutonomyDecisionKind",
+    "AutonomyPlan",
+    "AutonomyPlanTask",
     "AutonomyPolicy",
+    "parse_advisor_plan",
 ]

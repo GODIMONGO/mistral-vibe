@@ -175,13 +175,14 @@ Or switch the current interactive session and start the objective in one step:
 /goal <objective>
 ```
 
-For every non-trivial goal Vibe starts the goal advisor before the main model call,
-then requires the model to create a validated todo dependency graph and immediately
-delegate ready independent tasks. The UI shows `Running goal advisor` and
-`Running reviewer` while those stages are active. It gathers fresh evidence after
-the last change and finishes only with a reviewer `PASS`. A bounded read-only `swarm` can run
-independent explore, advisor, or reviewer tasks concurrently. Worker changes remain
-separate `task` calls so their results can be reviewed before completion.
+For every non-trivial goal Vibe starts the goal advisor before the main model call.
+The runtime validates its machine-readable dependency graph, writes the todo plan,
+and automatically delegates ready tasks in dependency order. Independent read-only
+tasks can run concurrently up to `max_parallel_subagents`; at most one mutating
+worker runs in a batch so parallel agents cannot overwrite each other's changes.
+After the root agent integrates the results, Vibe automatically runs the final
+reviewer. The UI shows the plan, each subagent, `Running goal advisor`, and
+`Running reviewer`. Completion requires fresh evidence and reviewer `PASS`.
 
 The advisor and reviewer can use a stronger configured model without changing the
 main agent model. Any model alias is supported; a Devstral alias is a good default

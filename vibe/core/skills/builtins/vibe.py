@@ -192,11 +192,13 @@ max_controls = 80
 max_text_chars = 4000
 ```
 
-Autonomous mode starts the advisor before the main model call, requires a validated
-todo dependency graph (`depends_on` contains prerequisite todo IDs), immediately
-delegates ready independent work, collects fresh evidence after the last mutation,
-and requires a final reviewer `PASS`. Advisor and reviewer stages have explicit
-running statuses in the CLI.
+Autonomous mode starts the advisor before the main model call. The runtime validates
+and writes the advisor's todo dependency graph (`depends_on` contains prerequisite
+todo IDs), then automatically delegates ready work in dependency waves. Independent
+read-only tasks can run concurrently; mutating workers run one at a time to avoid
+workspace conflicts. After the root integrates results, the runtime automatically
+starts a fresh reviewer and requires `VERDICT: PASS`. The plan, subagent calls,
+advisor status, and reviewer status are visible in the CLI.
 Its read-only `swarm` is concurrency-bounded. Child output and resident runtimes
 are bounded; persisted child sessions reload on demand. Use
 `vibe --add-api-key ALIAS` to configure the exact provider credential for

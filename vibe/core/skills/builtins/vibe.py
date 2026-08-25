@@ -182,6 +182,14 @@ max_live_child_runtimes = 8
 max_subagent_result_chars = 32768
 require_worker = true
 require_review = true
+
+# Native Windows desktop observation and input. The root agent owns the desktop;
+# worker subagents intentionally do not receive this tool.
+[tools.computer_use]
+permission = "ask"
+max_windows = 24
+max_controls = 80
+max_text_chars = 4000
 ```
 
 Autonomous mode starts the advisor before the main model call, requires a validated
@@ -195,6 +203,15 @@ are bounded; persisted child sessions reload on demand. Use
 an advisor/reviewer model without exposing the key. A configured Devstral alias is
 the recommended Mistral-backed advisor; an empty alias safely follows the active
 model.
+
+On Windows, `computer_use` provides bounded structured observation, one
+overwriting audit screenshot in the session scratchpad, focus, click, Unicode
+typing, key chords, and scrolling. Observation and screenshots are read-only;
+mutating actions follow `[tools.computer_use].permission`. Never pass secrets in
+`text`, because tool arguments are session-visible. Win32 imports are lazy and the
+tool is unavailable on other operating systems. Worker subagents intentionally do
+not receive desktop control, preventing parallel agents from racing for the mouse
+and keyboard.
 
 ### Automatic Model Fallback
 
@@ -743,8 +760,8 @@ There are two kinds of agents:
 - **auto-approve**: Auto-approves all tool calls
 - **autonomous**: Goal advisor, mandatory todo planning and worker delegation,
   bounded read-only swarm, fresh verification, and final reviewer. Uses managed
-  shell computer control with permission bypass while retaining critical safety
-  instructions.
+  shell and native Windows `computer_use` control with permission bypass while
+  retaining critical safety instructions.
 - **lean**: Specialized Lean 4 proof assistant. Not available by default — must be
   installed with `/leanstall` (removed with `/unleanstall`). Use `--agent lean
   --auto-approve` or `--agent lean --yolo` to run Lean mode without tool prompts.

@@ -28,6 +28,7 @@ class ToolCallDisplay(BaseModel):
     message: str | None = None
     settled_verb: str = ""
     settled_message: str | None = None
+    status_text: str = ""
 
 
 class ToolUIData[TArgs: BaseModel, TResult: BaseModel](ABC):
@@ -180,7 +181,7 @@ class ToolUIDataAdapter:
                 message=display.message,
                 settled_verb=display.settled_verb,
                 settled_message=display.settled_message,
-                status_text=self.get_status_text(),
+                status_text=display.status_text or self.get_status_text(),
             ),
         )
 

@@ -184,8 +184,11 @@ require_worker = true
 require_review = true
 ```
 
-Autonomous mode requires advisor consultation, a terminal todo plan, worker
-delegation, fresh evidence after the last mutation, and a final reviewer `PASS`.
+Autonomous mode starts the advisor before the main model call, requires a validated
+todo dependency graph (`depends_on` contains prerequisite todo IDs), immediately
+delegates ready independent work, collects fresh evidence after the last mutation,
+and requires a final reviewer `PASS`. Advisor and reviewer stages have explicit
+running statuses in the CLI.
 Its read-only `swarm` is concurrency-bounded. Child output and resident runtimes
 are bounded; persisted child sessions reload on demand. Use
 `vibe --add-api-key ALIAS` to configure the exact provider credential for

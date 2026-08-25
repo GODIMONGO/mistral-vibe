@@ -175,9 +175,11 @@ Or switch the current interactive session and start the objective in one step:
 /goal <objective>
 ```
 
-For every non-trivial goal it must consult a goal advisor, create a todo dependency
-plan, delegate implementation to workers, gather fresh evidence after the last
-change, and finish with a reviewer `PASS`. A bounded read-only `swarm` can run
+For every non-trivial goal Vibe starts the goal advisor before the main model call,
+then requires the model to create a validated todo dependency graph and immediately
+delegate ready independent tasks. The UI shows `Running goal advisor` and
+`Running reviewer` while those stages are active. It gathers fresh evidence after
+the last change and finishes only with a reviewer `PASS`. A bounded read-only `swarm` can run
 independent explore, advisor, or reviewer tasks concurrently. Worker changes remain
 separate `task` calls so their results can be reviewed before completion.
 

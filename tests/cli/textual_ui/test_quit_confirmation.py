@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Callable
 import signal
 import time
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -99,6 +100,53 @@ class TestQuitManager:
 
 
 class TestActionInterruptOrQuit(_SessionReadyApp):
+    @pytest.mark.asyncio
+    async def test_interrupt_keeps_server_turn_consumer_alive(
+        self, app: VibeApp
+    ) -> None:
+        server = MagicMock()
+        server.turn_active = True
+        server.interrupt = AsyncMock()
+        app._app_server = cast(Any, server)
+        app._loading_widget = MagicMock()
+        app._cached_loading_area = MagicMock()
+        app._cached_loading_area.remove_children = AsyncMock()
+        app._mount_and_scroll = AsyncMock()
+        release = asyncio.Event()
+        consumer = asyncio.create_task(release.wait())
+        app._agent_task = consumer
+
+        interrupt = asyncio.create_task(app._interrupt_turn())
+        await asyncio.sleep(0)
+
+        server.interrupt.assert_awaited_once()
+        app._loading_widget.set_status.assert_called_once_with("Stopping")
+        assert not consumer.done()
+        assert not interrupt.done()
+
+        release.set()
+        await interrupt
+        assert consumer.done()
+
+    @pytest.mark.asyncio
+    async def test_interrupt_cancels_local_job_without_server_turn(
+        self, app: VibeApp
+    ) -> None:
+        server = MagicMock()
+        server.turn_active = False
+        server.interrupt = AsyncMock()
+        app._app_server = cast(Any, server)
+        app._cached_loading_area = MagicMock()
+        app._cached_loading_area.remove_children = AsyncMock()
+        app._mount_and_scroll = AsyncMock()
+        local_job = asyncio.create_task(asyncio.Event().wait())
+        app._agent_task = local_job
+
+        await app._interrupt_turn()
+
+        assert local_job.cancelled()
+        server.interrupt.assert_not_called()
+
     def test_clears_input_when_has_value(self, app: VibeApp) -> None:
         mock_container = MagicMock()
         mock_container.value = "some text"

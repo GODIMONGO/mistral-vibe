@@ -106,6 +106,7 @@ class TodoEffectItem(ProtocolModel):
     content: str
     status: TodoEffectStatus = TodoEffectStatus.PENDING
     priority: TodoEffectPriority = TodoEffectPriority.MEDIUM
+    depends_on: list[str] = Field(default_factory=list)
 
 
 class TodoEffectInput(ProtocolModel):

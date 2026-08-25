@@ -12,7 +12,7 @@ from vibe.core.telemetry.types import LaunchContext, TerminalEmulator
 from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError, ToolPermission
 from vibe.core.tools.builtins.task import Task, TaskArgs, TaskResult, TaskToolConfig
 from vibe.core.tools.permissions import PermissionContext
-from vibe.core.types import ToolStreamEvent
+from vibe.core.types import ToolCallEvent, ToolStreamEvent
 
 
 @pytest.fixture
@@ -29,6 +29,29 @@ class TestTaskArgs:
         args = TaskArgs(task="do something", agent="explore")
         assert args.task == "do something"
         assert args.agent == "explore"
+
+
+@pytest.mark.parametrize(
+    ("agent", "summary", "status"),
+    [
+        ("goal-advisor", "Running goal advisor", "Goal advisor running"),
+        ("reviewer", "Running reviewer", "Reviewer running"),
+    ],
+)
+def test_task_role_has_visible_running_status(
+    agent: str, summary: str, status: str
+) -> None:
+    event = ToolCallEvent(
+        tool_name="task",
+        tool_class=Task,
+        args=TaskArgs(task="Inspect", agent=agent),
+        tool_call_id="call-1",
+    )
+
+    display = Task.get_call_display(event)
+
+    assert display.summary == summary
+    assert display.status_text == status
 
 
 class TestTaskToolValidation:

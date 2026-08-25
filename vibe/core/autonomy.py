@@ -100,6 +100,10 @@ class AutonomyCoordinator:
         self._reviewer_sequence = -1
         self._reviewer_passed = False
 
+    def seed_advisor_completed(self) -> None:
+        self._advisor_completed = True
+        self._latest_required_sequence = self._sequence
+
     def observe(self, event: BaseEvent) -> None:
         self._sequence += 1
         match event:

@@ -51,6 +51,24 @@ class Task(
     def get_call_display(cls, event: ToolCallEvent) -> ToolCallDisplay:
         args = event.args
         if isinstance(args, TaskArgs):
+            if args.agent == BuiltinAgentName.GOAL_ADVISOR:
+                return ToolCallDisplay(
+                    summary="Running goal advisor",
+                    verb="Running",
+                    message="goal advisor",
+                    settled_verb="Consulted",
+                    settled_message="goal advisor",
+                    status_text="Goal advisor running",
+                )
+            if args.agent == BuiltinAgentName.REVIEWER:
+                return ToolCallDisplay(
+                    summary="Running reviewer",
+                    verb="Running",
+                    message="reviewer",
+                    settled_verb="Ran",
+                    settled_message="reviewer",
+                    status_text="Reviewer running",
+                )
             message = f"{args.agent} agent: {args.task}"
             return ToolCallDisplay(
                 summary=f"Running {message}",

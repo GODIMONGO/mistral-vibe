@@ -90,7 +90,7 @@ from vibe.core.session.session_lease import SessionLease
 from vibe.core.session.session_logger import SessionLogger
 from vibe.core.session.session_migration import migrate_sessions_entrypoint
 from vibe.core.skills.manager import SkillManager
-from vibe.core.subagents import SubagentRunnerPort
+from vibe.core.subagents import SubagentRunnerPort, TaskArgs, TaskResult
 from vibe.core.system_prompt import get_universal_system_prompt
 from vibe.core.telemetry.build_metadata import (
     build_attachment_counts,
@@ -197,6 +197,8 @@ from vibe.utils import VIBE_WARNING_TAG
 from vibe.utils.api_keys import resolve_api_key
 from vibe.utils.cache_store import CacheStore, InMemoryCacheStore
 from vibe.utils.http import get_server_url_from_api_base, get_user_agent
+
+_AUTONOMY_OBJECTIVE_MAX_CHARS = 6_000
 
 
 def _is_git_executable_available() -> bool:
@@ -586,6 +588,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._current_user_message_id: str | None = None
         self._is_user_prompt_call: bool = False
         self._reactive_recovery_used: bool = False
+        self._autonomy_advisor_completed: bool = False
         self._pending_injected_messages: list[LLMMessage] = []
         self._pending_clear_context: bool = False
 
@@ -1727,6 +1730,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         coordinator.start_turn()
         return coordinator
 
+    def _prepare_autonomy_turn(self) -> AutonomyCoordinator | None:
+        self._reactive_recovery_used = False
+        return self._new_autonomy_coordinator()
+
     def _build_backend_metadata(
         self, call_type: TelemetryCallType | None = None
     ) -> TelemetryRequestMetadata:
@@ -1845,10 +1852,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             yield event
 
         try:
-            autonomy = self._new_autonomy_coordinator()
+            autonomy = self._prepare_autonomy_turn()
+            async for event in self._bootstrap_autonomy(
+                autonomy, user_msg, injected=injected
+            ):
+                yield event
             should_break_loop = False
             first_llm_turn = True
-            self._reactive_recovery_used = False
             while not should_break_loop:
                 self._is_user_prompt_call = False
                 result = await self.middleware_pipeline.run_before_turn(
@@ -1914,6 +1924,112 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         finally:
             await self._save_messages()
+
+    async def _bootstrap_autonomy(
+        self, coordinator: AutonomyCoordinator | None, objective: str, *, injected: bool
+    ) -> AsyncGenerator[BaseEvent, None]:
+        if coordinator is None:
+            return
+        if injected and self._autonomy_advisor_completed:
+            coordinator.seed_advisor_completed()
+            return
+        if not injected:
+            self._autonomy_advisor_completed = False
+        async for event in self._run_autonomy_advisor(objective):
+            coordinator.observe(event)
+            yield event
+
+    async def _run_autonomy_advisor(
+        self, objective: str
+    ) -> AsyncGenerator[BaseEvent, None]:
+        active_turn = self._active_turn
+        if active_turn is None or active_turn.subagent_runner is None:
+            return
+        try:
+            tool_instance = self.tool_manager.get("task")
+        except NoSuchToolError:
+            return
+
+        bounded_objective = objective[:_AUTONOMY_OBJECTIVE_MAX_CHARS]
+        if len(objective) > len(bounded_objective):
+            bounded_objective += "\n[objective truncated for advisor]"
+        args = TaskArgs(
+            agent="goal-advisor",
+            task=(
+                "Decompose this objective into acceptance criteria and a compact "
+                "dependency graph of executable tasks. Identify which tasks are "
+                "independent and can be delegated immediately. Do not implement.\n\n"
+                f"Objective:\n{bounded_objective}"
+            ),
+        )
+        call_id = str(uuid4())
+        self.messages.append(
+            LLMMessage(
+                role=Role.assistant,
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id=call_id,
+                        index=0,
+                        function=FunctionCall(
+                            name="task", arguments=args.model_dump_json()
+                        ),
+                    )
+                ],
+            )
+        )
+        resolved = ResolvedMessage(
+            tool_calls=[
+                ResolvedToolCall(
+                    tool_name="task",
+                    tool_class=type(tool_instance),
+                    validated_args=args,
+                    call_id=call_id,
+                )
+            ]
+        )
+        advisor_completed = False
+        async for event in self._handle_tool_calls(resolved):
+            if self._advisor_succeeded(event, call_id):
+                advisor_completed = True
+            yield event
+
+        if not advisor_completed:
+            self.messages.append(
+                LLMMessage(
+                    role=Role.user,
+                    injected=True,
+                    content=(
+                        "The automatic goal advisor failed. Retry the goal-advisor "
+                        "task before planning or implementation."
+                    ),
+                )
+            )
+            return
+
+        self._autonomy_advisor_completed = True
+        self.messages.append(
+            LLMMessage(
+                role=Role.user,
+                injected=True,
+                content=(
+                    "The goal advisor has completed. Immediately materialize its "
+                    "dependency graph with the todo tool, including depends_on for "
+                    "each task. In the same tool-call batch, delegate every ready "
+                    "independent task to an appropriate worker or explore subagent. "
+                    "Keep dependent tasks ordered, integrate all results, collect "
+                    "fresh evidence after mutations, and run the reviewer last."
+                ),
+            )
+        )
+
+    @staticmethod
+    def _advisor_succeeded(event: BaseEvent, call_id: str) -> bool:
+        if not isinstance(event, ToolResultEvent) or event.tool_call_id != call_id:
+            return False
+        result = event.result
+        failed = event.error or event.cancelled or event.skipped
+        return isinstance(result, TaskResult) and result.completed and not failed
 
     def _queue_post_turn_retry(self, retry_msg: LLMMessage | None) -> bool:
         # Returns whether the loop should still break (no retry queued).
@@ -3219,6 +3335,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._current_user_message_id = None
         self._is_user_prompt_call = False
         self._reactive_recovery_used = False
+        self._autonomy_advisor_completed = False
         if not self._is_subagent:
             self._model_failover_state.reset()
 

@@ -44,6 +44,10 @@ class TodoItem(BaseModel):
         default=TodoPriority.MEDIUM,
         description="Priority level of the task: high, medium, low",
     )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description="IDs of tasks that must finish before this task is ready",
+    )
 
 
 class TodoArgs(BaseModel):
@@ -150,9 +154,38 @@ class Todo(
         ids = [todo.id for todo in todos]
         if len(ids) != len(set(ids)):
             raise ToolError("Todo IDs must be unique")
+        self._validate_dependencies(todos, set(ids))
 
         self.state.todos = todos
 
         return TodoResult(
             verb="Updated", todos=self.state.todos, total_count=len(self.state.todos)
         )
+
+    @staticmethod
+    def _validate_dependencies(todos: list[TodoItem], ids: set[str]) -> None:
+        graph = {todo.id: todo.depends_on for todo in todos}
+        for todo in todos:
+            unknown = set(todo.depends_on) - ids
+            if unknown:
+                names = ", ".join(sorted(unknown))
+                raise ToolError(f"Todo '{todo.id}' has unknown dependencies: {names}")
+            if todo.id in todo.depends_on:
+                raise ToolError(f"Todo '{todo.id}' cannot depend on itself")
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(todo_id: str) -> None:
+            if todo_id in visiting:
+                raise ToolError("Todo dependency graph contains a cycle")
+            if todo_id in visited:
+                return
+            visiting.add(todo_id)
+            for dependency in graph[todo_id]:
+                visit(dependency)
+            visiting.remove(todo_id)
+            visited.add(todo_id)
+
+        for todo_id in graph:
+            visit(todo_id)

@@ -3066,14 +3066,23 @@ class VibeApp(App):  # noqa: PLR0904
                 UserQuestionResult(answers=[], cancelled=True)
             )
 
-        if self._agent_task and not self._agent_task.done():
+        if self.app_server.turn_active:
+            if self._loading_widget is not None:
+                self._loading_widget.set_status("Stopping")
+            try:
+                await self.app_server.interrupt()
+                agent_task = self._agent_task
+                if agent_task is not None and not agent_task.done():
+                    await asyncio.shield(agent_task)
+            except Exception:
+                self._interrupt_requested = False
+                raise
+        elif self._agent_task and not self._agent_task.done():
             self._agent_task.cancel()
             try:
                 await self._agent_task
             except asyncio.CancelledError:
                 pass
-        elif self.app_server.turn_active:
-            await self.app_server.interrupt()
 
         if self.event_handler:
             self.event_handler.stop_current_tool_call(cancelled=True)

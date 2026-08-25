@@ -8,11 +8,64 @@ import pytest
 from tests.conftest import ConfigBuilder, OrchestratorLoader
 from vibe.core.agents import AgentManager
 from vibe.core.config import VibeConfigSchema
+from vibe.core.config.harness_files import HarnessFilesManager
+from vibe.core.memory import GlobalMemoryStore
 from vibe.core.scratchpad import init_scratchpad
 from vibe.core.skills.manager import SkillManager
 from vibe.core.system_prompt import get_universal_system_prompt
 from vibe.core.tools import manager as tool_manager_module
 from vibe.core.tools.manager import ToolManager
+
+
+@pytest.mark.asyncio
+async def test_global_memory_is_injected_for_user_source(
+    build_config: ConfigBuilder, load_orchestrator: OrchestratorLoader[VibeConfigSchema]
+) -> None:
+    remembered = await GlobalMemoryStore().remember("Prefer verified claims")
+    config = build_config(
+        include_project_context=False,
+        include_prompt_detail=False,
+        include_model_info=False,
+        include_commit_signature=False,
+    )
+    skill_manager = SkillManager(lambda: config)
+    agent_manager = AgentManager(load_orchestrator(config))
+
+    prompt = get_universal_system_prompt(
+        config,
+        skill_manager,
+        agent_manager,
+        harness_files=HarnessFilesManager(sources=("user",)),
+    )
+
+    assert "# Global Memory" in prompt
+    assert remembered.entry.id in prompt
+    assert "Prefer verified claims" in prompt
+
+
+@pytest.mark.asyncio
+async def test_global_memory_is_not_injected_without_user_source(
+    build_config: ConfigBuilder, load_orchestrator: OrchestratorLoader[VibeConfigSchema]
+) -> None:
+    await GlobalMemoryStore().remember("Private user preference")
+    config = build_config(
+        include_project_context=False,
+        include_prompt_detail=False,
+        include_model_info=False,
+        include_commit_signature=False,
+    )
+    skill_manager = SkillManager(lambda: config)
+    agent_manager = AgentManager(load_orchestrator(config))
+
+    prompt = get_universal_system_prompt(
+        config,
+        skill_manager,
+        agent_manager,
+        harness_files=HarnessFilesManager(sources=("project",)),
+    )
+
+    assert "Global Memory" not in prompt
+    assert "Private user preference" not in prompt
 
 
 def _hide_standard_git_installs(monkeypatch: pytest.MonkeyPatch) -> None:

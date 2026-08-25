@@ -98,6 +98,7 @@ pip install mistral-vibe
   - Execute shell commands, with managed shell sessions, polling, and stdin helpers available during rollout.
   - Recursively search code with `grep` (with `ripgrep` support).
   - Manage a `todo` list to track the agent's work.
+  - Keep explicit user-approved preferences in global memory across projects.
   - Ask interactive questions to gather user input (`ask_user_question`).
   - Delegate tasks to subagents for parallel work (`task`).
 - **Project-Aware Context**: Vibe automatically scans your project's file structure and Git status to provide relevant context to the agent, improving its understanding of your codebase.
@@ -220,6 +221,25 @@ loaded again on demand. If the role model uses another provider, define that
 provider/model normally and run `vibe --add-api-key ALIAS` with its exact alias.
 Credentials stay in the environment/keyring flow and are redacted from config
 introspection.
+
+### Global Memory
+
+Vibe can keep short, explicit notes across projects and restarts. Ask it to
+"remember" a durable preference, to show global memory, or to forget an entry by
+the stable ID returned by the `memory` tool. New sessions automatically receive a
+bounded memory section as potentially stale context, so the agent must still
+verify factual claims before relying on them.
+
+Memory is stored in `~/.vibe/memory.json`, with at most 100 entries, 2,000
+characters per entry, and a 12,000-character prompt budget. Duplicate notes are
+deduplicated. The tool refuses likely API keys, passwords, private keys, and
+tokens; do not use global memory for credentials, payment data, transient task
+state, or unverified assumptions.
+
+```toml
+[tools.memory]
+permission = "ask" # use "always" only when autonomous memory writes are desired
+```
 
 ### Computer Use (Windows)
 

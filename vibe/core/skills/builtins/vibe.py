@@ -29,6 +29,7 @@ agents, prompts, logs, and session data live here.
   config.toml          # Optional user configuration, created on first saved setting
   hooks.toml           # User-level hook definitions
   .env                 # API keys and credentials (dotenv format)
+  memory.json          # Bounded user-approved memory shared across projects
   vibehistory          # Command history
   trusted_folders.toml # Trust database for project folders
   connector_bootstrap_cache.json # Short-lived connector discovery cache
@@ -330,6 +331,9 @@ permission = "ask"
 engine = "auto"                   # "auto", "mistral", or no-key "public"
 timeout = 30
 max_results = 5                   # 1-10; public response body is capped
+
+[tools.memory]
+permission = "ask"                # "always" permits autonomous memory writes
 ```
 
 `web_search` is available without a separate API key through the bounded public
@@ -337,6 +341,14 @@ engine. `auto` tries hosted Mistral search when credentials are available and fa
 back to public search on quota, rate-limit, or service errors. Autonomous explore,
 advisor, reviewer, and worker profiles include the tool. Use `engine = "public"`
 to avoid hosted search token usage entirely.
+
+`memory` stores explicit user-approved notes in `~/.vibe/memory.json` and injects
+a bounded global-memory section into future sessions across all projects. Actions
+are `remember`, `list`, and `forget` (the latter requires the stable entry ID).
+The store is capped at 100 entries, 2,000 characters per entry, and 12,000 prompt
+characters; exact notes are deduplicated. It rejects likely credentials and must
+not be used for secrets, payment data, transient task state, or unverified
+assumptions. Saved facts are potentially stale and must be verified before use.
 
 The built-in shell surface is controlled by the `managed_shell_tools_enabled` config
 field and the `vibe_cli_managed_shell_tools` GrowthBook experiment. The default variant

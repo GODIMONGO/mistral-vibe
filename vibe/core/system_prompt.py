@@ -14,6 +14,7 @@ from vibe.core.config.harness_files import (
     HarnessFilesManager,
     get_harness_files_manager,
 )
+from vibe.core.memory import MemoryStoreError, render_global_memory
 from vibe.core.paths import VIBE_HOME
 from vibe.core.prompts import SystemPrompt, UtilityPrompt
 from vibe.core.utils import (
@@ -22,6 +23,7 @@ from vibe.core.utils import (
     is_windows,
     resolve_windows_shell,
 )
+from vibe.observability.logging import logger
 from vibe.utils.paths import is_dangerous_directory
 
 if TYPE_CHECKING:
@@ -335,6 +337,16 @@ def _get_headless_section() -> str:
     )
 
 
+def _get_global_memory_section(harness_files: HarnessFilesManager) -> str:
+    if "user" not in harness_files.sources:
+        return ""
+    try:
+        return render_global_memory()
+    except MemoryStoreError as exc:
+        logger.warning("Could not load global memory: %s", exc)
+        return ""
+
+
 def _get_tool_aware_os_system_prompt(tool_manager: ToolManager | None) -> str:
     if tool_manager is None:
         return _get_os_system_prompt()
@@ -390,6 +402,8 @@ def get_universal_system_prompt(
             sections.append(subagents_section)
 
         sections.extend(filter(None, [_get_scratchpad_section(scratchpad_dir)]))
+
+    sections.extend(filter(None, [_get_global_memory_section(harness_files)]))
 
     if config.include_project_context:
         is_dangerous, reason = is_dangerous_directory(cwd)

@@ -169,6 +169,12 @@ Start the autonomous agent with:
 vibe --agent autonomous
 ```
 
+Or switch the current interactive session and start the objective in one step:
+
+```text
+/goal <objective>
+```
+
 For every non-trivial goal it must consult a goal advisor, create a todo dependency
 plan, delegate implementation to workers, gather fresh evidence after the last
 change, and finish with a reviewer `PASS`. A bounded read-only `swarm` can run
@@ -387,6 +393,10 @@ Vibe provides several built-in slash commands. Use slash commands by typing them
 If a model response is interrupted by a backend error, use `/retry` to continue
 from the partial response. Add optional guidance after the command, for example
 `/retry keep the conclusion concise`.
+
+Use `/goal <objective>` to switch to the autonomous agent and start a goal with
+mandatory planning, delegation, fresh verification, and final review. If another
+turn is running, the command waits in the main input queue.
 
 ### Custom Slash Commands via Skills
 

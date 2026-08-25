@@ -208,6 +208,14 @@ class CommandRegistry:
                 ),
                 handler="_retry",
             ),
+            "goal": Command(
+                aliases=frozenset(["/goal"]),
+                description=(
+                    "Run an objective autonomously with planning, delegation, "
+                    "verification, and review"
+                ),
+                handler="_goal_command",
+            ),
             "loop": Command(
                 aliases=frozenset(["/loop"]),
                 description=(

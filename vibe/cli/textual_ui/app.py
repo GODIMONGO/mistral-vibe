@@ -2202,9 +2202,11 @@ class VibeApp(App):  # noqa: PLR0904
         return True
 
     def _get_skill_entries(self) -> list[tuple[str, str]]:
+        if self._app_server is None:
+            return []
         return [
             (f"/{skill.name}", skill.description)
-            for skill in self.app_server.resources.runtime.skills
+            for skill in self._app_server.resources.runtime.skills
             if skill.user_invocable
         ]
 
@@ -3899,6 +3901,20 @@ class VibeApp(App):  # noqa: PLR0904
     async def _loop_command(self, cmd_args: str = "", **kwargs: Any) -> None:
         widget = await self._loop_commands.handle_command(cmd_args)
         await self._mount_and_scroll(widget)
+
+    async def _goal_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
+        objective = cmd_args.strip()
+        if not objective:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "Provide an objective: /goal <objective>",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+
+        await self._switch_to_agent("autonomous")
+        await self._handle_user_message(objective)
 
     async def _compact_history(self, cmd_args: str = "", **kwargs: Any) -> None:
         if self._agent_job_active():

@@ -198,6 +198,17 @@ class TestCommandRegistry:
         assert cmd.side_channel is False
         assert cmd_args == "30s ping"
 
+    def test_goal_command_registration(self) -> None:
+        registry = CommandRegistry()
+        result = registry.parse_command("/goal finish the migration")
+
+        assert result is not None
+        cmd_name, cmd, cmd_args = result
+        assert cmd_name == "goal"
+        assert cmd.handler == "_goal_command"
+        assert cmd.side_channel is False
+        assert cmd_args == "finish the migration"
+
     def test_exit_command_accepts_bare_synonyms(self) -> None:
         registry = CommandRegistry()
         for alias in ["/exit", "exit", "quit", ":q", ":quit"]:

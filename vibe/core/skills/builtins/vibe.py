@@ -742,6 +742,9 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 
 ## Built-in Slash Commands
 
+- `/goal <objective>` - Switch to the autonomous agent and run the objective with
+  mandatory planning, worker delegation, fresh verification, and final review.
+  When the session is busy, the command waits in the main input queue.
 - `/help` - Show help message
 - `/config` - Full-screen settings browser. Fields show their value and origin layer (default / TOML / env / override). Type to filter, arrows to move, Enter to edit; booleans toggle, closed-set fields (theme, models) pick from a list, scalars edit inline, complex fields open a JSON editor. The edit modal shows an inspector of the layers setting the field; edits persist to the TOML layer by default, `Tab` targets the ephemeral session override (until restart), and `Ctrl+R` clears the field one writable layer at a time toward the default. The `tools` field opens a grouped tool list with a per-tool config editor (permission, allow/deny lists, `Ctrl+E` for raw JSON). Enabling/disabling whole MCP servers or connectors stays in `/mcp`.
 - `/model` - Select active model
@@ -869,7 +872,7 @@ changes (theme, model, thinking, voice, proxy) enqueue the persist
 step on the main queue as a `COMMAND` item with a callable payload;
 the queue drains when idle, so config writes never conflict.
 
-Commands not on the side-channel allowlist (e.g. `/clear`, `/compact`,
+Commands not on the side-channel allowlist (e.g. `/goal`, `/clear`, `/compact`,
 `/rewind`, `/resume`, `/reload`, `/leanstall`, `/unleanstall`, `/teleport`,
 `/remote-project`, `/retry`) are enqueued on the main queue and execute
 when the session is idle.

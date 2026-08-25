@@ -30,6 +30,24 @@ async def test_compose_yields_main_ui_when_no_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_slash_completion_is_available_before_session_ready() -> None:
+    async def _blocking_starter() -> AppServerSession:
+        await asyncio.Event().wait()
+        raise RuntimeError("unreachable")
+
+    app = build_test_vibe_app(app_server=_blocking_starter)
+    app._mount_first = True
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.1)
+        container = app.query_one(ChatInputContainer)
+
+        entries = container._get_slash_entries()
+
+        assert app._app_server is None
+        assert any(entry.label == "/goal" for entry in entries)
+
+
+@pytest.mark.asyncio
 async def test_registry_swapped_after_session_ready() -> None:
     app = build_test_vibe_app()
     async with app.run_test(size=(120, 40)) as pilot:

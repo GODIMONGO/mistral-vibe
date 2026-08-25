@@ -41,7 +41,7 @@ class SignInTargetScreen(OnboardingScreen):
                 with Vertical(id="sign-in-target-panel", classes="onboarding-panel"):
                     yield PetitChat(id="sign-in-target-chat", classes="onboarding-chat")
                     yield NoMarkupStatic(
-                        "Launch browser",
+                        "Sign in with link or QR",
                         id="sign-in-target-title",
                         classes="onboarding-heading",
                     )

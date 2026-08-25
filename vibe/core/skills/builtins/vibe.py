@@ -577,9 +577,9 @@ vibe_base_url = "https://chat.mistral.ai"
 
 Interactive setup can target a Mistral-compatible deployment instead of the
 default `console.mistral.ai` / `api.mistral.ai`. The final credential is always a
-Mistral API key. On the auth-method screen pick **Launch browser**, then
-**Other** on the sign-in-target screen, and enter a login domain to complete
-browser sign-in. This sets `browser_auth_base_url` (the entered domain) and
+Mistral API key. On the auth-method screen pick **Sign in with link or QR**, then
+**Other** on the sign-in-target screen, enter a login domain, and open the
+displayed link or scan its QR code. This sets `browser_auth_base_url` (the entered domain) and
 derives `browser_auth_api_base_url` (`DOMAIN/api`). The overridden `mistral`
 provider is persisted to user config so subsequent runs reuse it.
 
@@ -896,7 +896,9 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/data-retention` - Show data retention information
 - `/teleport` - Teleport session to Vibe Code Web (only available when Vibe Code is enabled)
 - `/logout` - Remove the saved Mistral account credential and exit. The next
-  launch starts browser sign-in.
+  launch starts browser sign-in. It does not open the browser automatically;
+  it immediately shows an openable/copyable URL and a locally generated
+  terminal QR code.
 - `/exit` - Exit the application without signing out
 
 ## File Mentions (`@`)

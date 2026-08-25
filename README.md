@@ -521,7 +521,9 @@ Additional autonomous commands include `/subagents`, `/effort
 off|low|medium|high|max`, `/ultracode <objective>`, `/pc`, `/browser`, `/web`, and
 `/memory`. `/chats` opens the local session picker. `/logout` removes the saved
 Mistral credential and exits so the next launch starts browser sign-in. `/exit`
-only closes the application. The built-in `/web-engineering` skill adds
+only closes the application. Browser sign-in does not launch the browser
+automatically: it immediately displays an openable, copyable URL and a locally
+generated terminal QR code. The built-in `/web-engineering` skill adds
 primary-source research,
 security, accessibility, performance, and real-browser verification.
 
@@ -684,7 +686,7 @@ mixed answers. Set `fallback_model = ""` to disable the feature.
 
 If you use a Mistral-compatible deployment instead of the default `console.mistral.ai` / `api.mistral.ai`, you can point browser sign-in at it. The credential is still a Mistral API key.
 
-Run `vibe --setup`, choose **Launch browser** then **Other**, enter your login domain, and sign in through the browser. A bare domain is prefixed with `https://`, and the auth API base is derived as `DOMAIN/api`. The overridden `mistral` provider is saved to your user config so subsequent runs reuse it.
+Run `vibe --setup`, choose **Sign in with link or QR** then **Other**, enter your login domain, and open the displayed link or scan its QR code. A bare domain is prefixed with `https://`, and the auth API base is derived as `DOMAIN/api`. The overridden `mistral` provider is saved to your user config so subsequent runs reuse it.
 
 **Note**: the wizard reads any custom `browser_auth_base_url` already set in `config.toml`. Choosing **Other** pre-fills that configured domain so you can confirm or edit it. Choosing **Mistral AI** while a custom domain is configured warns you first — press **Enter** again to confirm the reset to the default domain, which is then persisted.
 

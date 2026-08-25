@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import IntEnum
 from typing import ClassVar, Literal
+from urllib.parse import quote
 
 from rich.markup import escape
 from rich.text import Text
@@ -34,6 +35,7 @@ from vibe.setup.auth import (
 )
 from vibe.setup.onboarding.base import OnboardingScreen
 from vibe.setup.onboarding.gradient_text import GRADIENT_COLORS, append_gradient_text
+from vibe.setup.onboarding.terminal_qr import render_terminal_qr
 
 PENDING_HINT = (
     f"Press {shortcut('m')} to enter API key manually - {shortcut('Esc')} to cancel"
@@ -43,18 +45,20 @@ ERROR_HINT = (
     f"to enter API key manually - {shortcut('Esc')} to cancel"
 )
 SUCCESS_HINT = "Finishing setup..."
-SIGN_IN_URL_HELP_PREFIX = "If your browser did not open, "
+SIGN_IN_URL_HELP_PREFIX = "Open "
+SIGN_IN_URL_OPEN_LABEL = "this sign-in link"
+SIGN_IN_URL_COPY_PREFIX = " or "
 SIGN_IN_URL_COPY_LABEL = "copy this URL"
-SIGN_IN_URL_HELP_SUFFIX = f" (press {shortcut('c')})."
+SIGN_IN_URL_HELP_SUFFIX = f" (press {shortcut('c')}), or scan the QR code."
 SIGN_IN_URL_FALLBACK_PREFIX = (
     "If copying to the clipboard was not successful, copy the following URL:"
 )
 SIGN_IN_URL_NATIVE_COPY_HINT = f"I{NATIVE_COPY_HINT[1:]}"
 SUCCESS_EXIT_DELAY_SECONDS: float = 2.0
-SIGN_IN_URL_HELP_DELAY_SECONDS: float = 4.0
+SIGN_IN_URL_HELP_DELAY_SECONDS: float = 0.0
 WAITING_FOR_AUTHENTICATION_MESSAGE = "Waiting for authentication..."
 STEP_DESCRIPTIONS = [
-    ("Open browser", "Your browser should open automatically", "Browser opened"),
+    ("Open sign-in page", "Use the link or QR code below", "Sign-in page opened"),
     ("Complete sign-in", WAITING_FOR_AUTHENTICATION_MESSAGE, "Sign-in confirmed."),
     ("Finished setup", "Vibe will start automatically", "Setup complete."),
 ]
@@ -154,6 +158,7 @@ class BrowserSignInScreen(OnboardingScreen):
         self._step_widgets: list[BrowserSignInStepWidgets] = []
         self._title_widget: NoMarkupStatic
         self._url_widget: Static
+        self._qr_widget: Static
         self._hint_widget: NoMarkupStatic
 
     def compose(self) -> ComposeResult:
@@ -164,18 +169,19 @@ class BrowserSignInScreen(OnboardingScreen):
                         id="browser-sign-in-chat", classes="onboarding-chat"
                     )
                     self._title_widget = NoMarkupStatic(
-                        "Launch browser",
+                        "Sign in with link or QR",
                         id="browser-sign-in-title",
                         classes="onboarding-heading",
                     )
                     yield self._title_widget
                     yield NoMarkupStatic(
-                        "Your browser should open automatically",
+                        "Open the link below or scan the QR code",
                         id="browser-sign-in-subtitle",
                     )
                     with Vertical(id="browser-sign-in-steps"):
                         yield from self._compose_step_rows()
                     yield Static("", id="browser-sign-in-url")
+                    yield Static("", id="browser-sign-in-qr")
                     yield NoMarkupStatic("", id="browser-sign-in-hint")
 
     def _compose_step_rows(self) -> ComposeResult:
@@ -195,6 +201,7 @@ class BrowserSignInScreen(OnboardingScreen):
 
     def on_mount(self) -> None:
         self._url_widget = self.query_one("#browser-sign-in-url", Static)
+        self._qr_widget = self.query_one("#browser-sign-in-qr", Static)
         self._hint_widget = self.query_one("#browser-sign-in-hint", NoMarkupStatic)
         self.state = self._initial_state
         self.watch_state(self.state)
@@ -258,7 +265,7 @@ class BrowserSignInScreen(OnboardingScreen):
         try:
             browser_sign_in = self._browser_sign_in_factory()
             api_key = await browser_sign_in.authenticate(
-                lambda event: self._on_event(attempt_number, event)
+                lambda event: self._on_event(attempt_number, event), open_browser=False
             )
         except asyncio.CancelledError:
             return
@@ -383,6 +390,7 @@ class BrowserSignInScreen(OnboardingScreen):
 
         self._hint_widget.update(shortcut_hint(state.hint))
         self._url_widget.update(self._build_url_text(state))
+        self._qr_widget.update(self._build_qr_text(state))
 
         for index, (widgets, (title, pending_detail, done_detail)) in enumerate(
             zip(self._step_widgets, STEP_DESCRIPTIONS, strict=True)
@@ -480,8 +488,11 @@ class BrowserSignInScreen(OnboardingScreen):
         ):
             return ""
 
+        safe_url = quote(state.sign_in_url, safe=":/?&=%#@+;,")
         help_text = (
             f"{escape(SIGN_IN_URL_HELP_PREFIX)}"
+            f"[link='{safe_url}']{escape(SIGN_IN_URL_OPEN_LABEL)}[/link]"
+            f"{escape(SIGN_IN_URL_COPY_PREFIX)}"
             f"[@click='screen.copy_url']{escape(SIGN_IN_URL_COPY_LABEL)}[/]"
             f"{SIGN_IN_URL_HELP_SUFFIX}"
         )
@@ -492,6 +503,16 @@ class BrowserSignInScreen(OnboardingScreen):
             f"{escape(SIGN_IN_URL_FALLBACK_PREFIX)} "
             f"{escape(state.sign_in_url)}. {escape(SIGN_IN_URL_NATIVE_COPY_HINT)}."
         )
+
+    @staticmethod
+    def _build_qr_text(state: BrowserSignInViewState) -> Text | str:
+        if (
+            state.variant == "success"
+            or state.sign_in_url is None
+            or not state.show_sign_in_url_help
+        ):
+            return ""
+        return render_terminal_qr(state.sign_in_url) or ""
 
     def _schedule_sign_in_url_help(self, attempt_number: int, sign_in_url: str) -> None:
         if self._sign_in_url_help_delay <= 0:

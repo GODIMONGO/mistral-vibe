@@ -97,7 +97,7 @@ class AuthMethodScreen(OnboardingScreen):
     def _update_display(self) -> None:
         options = [
             (
-                "Launch browser",
+                "Sign in with link or QR",
                 "Recommended",
                 "Sign in to Mistral AI Studio and finish setup automatically.",
             ),

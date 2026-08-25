@@ -90,7 +90,10 @@ class BrowserSignInService:
         return await self._complete_attempt(attempt)
 
     async def authenticate(
-        self, event_callback: BrowserSignInEventCallback | None = None
+        self,
+        event_callback: BrowserSignInEventCallback | None = None,
+        *,
+        open_browser: bool = True,
     ) -> str:
         attempt = await self.start_attempt()
         event = BrowserSignInAttemptStarted(
@@ -98,8 +101,9 @@ class BrowserSignInService:
         )
         if event_callback is not None:
             event_callback(event)
-        self._emit_status(event_callback, BrowserSignInStatus.OPENING_BROWSER)
-        self._open_browser_or_raise(attempt.sign_in_url)
+        if open_browser:
+            self._emit_status(event_callback, BrowserSignInStatus.OPENING_BROWSER)
+            self._open_browser_or_raise(attempt.sign_in_url)
         return await self._complete_attempt(attempt, event_callback=event_callback)
 
     async def _complete_attempt(

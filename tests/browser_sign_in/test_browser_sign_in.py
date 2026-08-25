@@ -104,6 +104,40 @@ async def test_authenticate_returns_api_key_after_pending_poll() -> None:
 
 
 @pytest.mark.asyncio
+async def test_authenticate_can_wait_without_opening_browser() -> None:
+    opened_urls: list[str] = []
+    events: list[BrowserSignInEvent] = []
+    _, service = build_test_service(
+        poll_results=[
+            BrowserSignInPollResult(status="completed", exchange_token="exchange-1")
+        ],
+        open_browser=lambda url: opened_urls.append(url) or True,
+    )
+
+    api_key = await service.authenticate(
+        event_callback=events.append, open_browser=False
+    )
+
+    assert api_key == "sk-browser-key"
+    assert opened_urls == []
+    assert (
+        BrowserSignInStatusChanged(status=BrowserSignInStatus.OPENING_BROWSER)
+        not in events
+    )
+    assert events[0] == BrowserSignInAttemptStarted(
+        sign_in_url=TEST_SIGN_IN_URL,
+        expires_at=build_sign_in_process(TEST_NOW).expires_at,
+    )
+    assert events[1:] == [
+        BrowserSignInStatusChanged(
+            status=BrowserSignInStatus.WAITING_FOR_BROWSER_SIGN_IN
+        ),
+        BrowserSignInStatusChanged(status=BrowserSignInStatus.EXCHANGING),
+        BrowserSignInStatusChanged(status=BrowserSignInStatus.COMPLETED),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_start_attempt_returns_attempt_without_opening_browser() -> None:
     opened_urls: list[str] = []
     gateway, service = build_test_service(

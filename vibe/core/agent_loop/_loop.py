@@ -2271,9 +2271,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             agent="reviewer",
             task=(
                 "Review the current workspace and fresh evidence for this autonomous "
-                "goal. Check every acceptance criterion and todo result. End with "
-                "VERDICT: PASS only if the goal is fully proven; otherwise end with "
-                "VERDICT: FAIL and list precise remaining work.\n\n"
+                "goal. Independently check every acceptance criterion and todo result. "
+                "Do not trust completion claims without matching tool, test, file, or "
+                "observable-state evidence. Before a passing verdict, emit at least one "
+                "`EVIDENCE_CHECKED: <claim> => <specific evidence>` line. End with "
+                "VERDICT: PASS only if every material claim is proven; otherwise end "
+                "with VERDICT: FAIL and list precise remaining work.\n\n"
                 f"Goal:\n{objective}\n\nBounded execution evidence:\n"
                 f"{self._bounded_autonomy_evidence()}"
             ),

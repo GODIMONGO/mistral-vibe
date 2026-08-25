@@ -92,7 +92,14 @@ def _observe_successful_advisor(coordinator: AutonomyCoordinator) -> None:
 
 def _observe_passing_reviewer(coordinator: AutonomyCoordinator) -> None:
     coordinator.observe(_task_call("reviewer-1", "reviewer"))
-    coordinator.observe(_task_result("reviewer-1", "All checks passed\nVERDICT: PASS"))
+    coordinator.observe(
+        _task_result(
+            "reviewer-1",
+            "All checks passed\n"
+            "EVIDENCE_CHECKED: focused behavior => test passed\n"
+            "VERDICT: PASS",
+        )
+    )
 
 
 def test_completion_passes_with_advisor_terminal_plan_and_fresh_review() -> None:
@@ -141,7 +148,7 @@ def test_mutation_after_review_requires_a_fresh_reviewer() -> None:
     decision = coordinator.evaluate_completion()
 
     assert decision.kind is AutonomyDecisionKind.RETRY
-    assert "reviewer did not return VERDICT: PASS" in decision.reasons
+    assert "reviewer did not return evidence-backed VERDICT: PASS" in decision.reasons
 
 
 def test_retry_budget_ends_in_a_bounded_terminal_block() -> None:
@@ -190,7 +197,23 @@ def test_reviewer_pass_marker_must_be_the_final_nonempty_line() -> None:
 
     decision = coordinator.evaluate_completion()
 
-    assert "reviewer did not return VERDICT: PASS" in decision.reasons
+    assert "reviewer did not return evidence-backed VERDICT: PASS" in decision.reasons
+
+
+def test_reviewer_pass_without_checked_evidence_is_rejected() -> None:
+    coordinator = AutonomyCoordinator(AutonomyPolicy(require_worker=False))
+    coordinator.start_turn()
+    _observe_successful_advisor(coordinator)
+    coordinator.observe(_terminal_todos())
+    coordinator.observe(_task_call("reviewer-1", "reviewer"))
+    coordinator.observe(
+        _task_result("reviewer-1", "Everything looks correct\nVERDICT: PASS")
+    )
+
+    decision = coordinator.evaluate_completion()
+
+    assert decision.kind is AutonomyDecisionKind.RETRY
+    assert "reviewer did not return evidence-backed VERDICT: PASS" in decision.reasons
 
 
 def test_required_worker_must_complete_successfully() -> None:
@@ -206,7 +229,9 @@ def test_required_worker_must_complete_successfully() -> None:
 
     assert "a worker has not completed successfully" in missing.reasons
     stale_review = coordinator.evaluate_completion()
-    assert "reviewer did not return VERDICT: PASS" in stale_review.reasons
+    assert (
+        "reviewer did not return evidence-backed VERDICT: PASS" in stale_review.reasons
+    )
     _observe_passing_reviewer(coordinator)
     assert coordinator.evaluate_completion().kind is AutonomyDecisionKind.PASS
 
@@ -228,7 +253,11 @@ def test_reviewer_launched_concurrently_with_worker_is_stale() -> None:
     coordinator.observe(_task_call("reviewer-1", "reviewer"))
     coordinator.observe(_task_call("worker-1", "worker"))
     coordinator.observe(_task_result("worker-1"))
-    coordinator.observe(_task_result("reviewer-1", "VERDICT: PASS"))
+    coordinator.observe(
+        _task_result(
+            "reviewer-1", "EVIDENCE_CHECKED: worker output => verified\nVERDICT: PASS"
+        )
+    )
 
     decision = coordinator.evaluate_completion()
 
@@ -295,7 +324,13 @@ def test_swarm_advisor_and_reviewer_count_toward_completion() -> None:
             tool_class=Swarm,
             result=SwarmResult(
                 results=[
-                    TaskResult(response="VERDICT: PASS", turns_used=1, completed=True)
+                    TaskResult(
+                        response=(
+                            "EVIDENCE_CHECKED: swarm result => verified\nVERDICT: PASS"
+                        ),
+                        turns_used=1,
+                        completed=True,
+                    )
                 ],
                 completed_count=1,
             ),

@@ -37,7 +37,11 @@ class _AdvisorRunner:
         del max_result_chars
         self.calls.append(args)
         if args.agent == "reviewer":
-            response = "All acceptance criteria are satisfied.\nVERDICT: PASS"
+            response = (
+                "All acceptance criteria are satisfied.\n"
+                "EVIDENCE_CHECKED: acceptance criteria => focused tests passed\n"
+                "VERDICT: PASS"
+            )
         elif args.agent == "goal-advisor":
             response = self.advisor_response
         else:
@@ -264,6 +268,7 @@ async def test_autonomy_runs_reviewer_after_automatic_worker() -> None:
         "reviewer",
     ]
     assert "Bounded execution evidence" in runner.calls[2].task
+    assert "EVIDENCE_CHECKED:" in runner.calls[2].task
     assert "implement (worker): completed\nTASK_RESULT: PASS" in runner.calls[2].task
     reviewer_call = next(
         event

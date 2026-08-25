@@ -182,7 +182,8 @@ tasks can run concurrently up to `max_parallel_subagents`; at most one mutating
 worker runs in a batch so parallel agents cannot overwrite each other's changes.
 After the root agent integrates the results, Vibe automatically runs the final
 reviewer. The UI shows the plan, each subagent, `Running goal advisor`, and
-`Running reviewer`. Completion requires fresh evidence and reviewer `PASS`.
+`Running reviewer`. Completion requires fresh evidence, at least one specific
+`EVIDENCE_CHECKED: <claim> => <evidence>` record, and reviewer `PASS`.
 
 The advisor and reviewer can use a stronger configured model without changing the
 main agent model. Any model alias is supported; a Devstral alias is a good default

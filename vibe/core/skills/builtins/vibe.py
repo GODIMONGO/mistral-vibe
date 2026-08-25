@@ -197,7 +197,8 @@ and writes the advisor's todo dependency graph (`depends_on` contains prerequisi
 todo IDs), then automatically delegates ready work in dependency waves. Independent
 read-only tasks can run concurrently; mutating workers run one at a time to avoid
 workspace conflicts. After the root integrates results, the runtime automatically
-starts a fresh reviewer and requires `VERDICT: PASS`. The plan, subagent calls,
+starts a fresh reviewer and requires specific `EVIDENCE_CHECKED: <claim> =>
+<evidence>` records followed by `VERDICT: PASS`. The plan, subagent calls,
 advisor status, and reviewer status are visible in the CLI.
 Its read-only `swarm` is concurrency-bounded. Child output and resident runtimes
 are bounded; persisted child sessions reload on demand. Use
@@ -773,7 +774,8 @@ There are two kinds of agents:
 - **explore**: Read-only codebase exploration subagent with grep, file reading,
   and skill loading. Spawned by the model, not selectable by the user.
 - **goal-advisor**: Read-only acceptance-criteria and dependency-plan advisor.
-- **reviewer**: Read-only evidence reviewer; emits `VERDICT: PASS` or `FAIL`.
+- **reviewer**: Read-only evidence reviewer; records checked claim/evidence pairs,
+  then emits `VERDICT: PASS` or `FAIL`.
 - **worker**: Implementation subagent with file tools and permissioned shell access.
 
 Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.

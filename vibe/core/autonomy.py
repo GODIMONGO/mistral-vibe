@@ -16,6 +16,7 @@ GOAL_ADVISOR_AGENT = "goal-advisor"
 REVIEWER_AGENT = "reviewer"
 WORKER_AGENT = "worker"
 REVIEW_PASS_MARKER = "VERDICT: PASS"
+REVIEW_EVIDENCE_PREFIX = "EVIDENCE_CHECKED:"
 AUTONOMY_PLAN_START = "<goal-plan>"
 AUTONOMY_PLAN_END = "</goal-plan>"
 MAX_AUTOMATIC_PLAN_TASKS = 16
@@ -300,7 +301,14 @@ class AutonomyCoordinator:
                     for line in result.response.splitlines()
                     if line.strip()
                 ]
-                self._reviewer_passed = bool(lines) and lines[-1] == REVIEW_PASS_MARKER
+                checked_evidence = any(
+                    line.startswith(REVIEW_EVIDENCE_PREFIX)
+                    and line.removeprefix(REVIEW_EVIDENCE_PREFIX).strip()
+                    for line in lines
+                )
+                self._reviewer_passed = (
+                    bool(lines) and lines[-1] == REVIEW_PASS_MARKER and checked_evidence
+                )
 
     @staticmethod
     def _result_succeeded(event: ToolResultEvent) -> bool:
@@ -321,7 +329,7 @@ class AutonomyCoordinator:
             reasons.append("a worker has not completed successfully")
         if self.policy.require_review:
             if not self._reviewer_passed:
-                reasons.append("reviewer did not return VERDICT: PASS")
+                reasons.append("reviewer did not return evidence-backed VERDICT: PASS")
             elif self._reviewer_sequence <= self._latest_required_sequence:
                 reasons.append("reviewer result predates the latest required work")
         return tuple(reasons)

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 import importlib
+import os
 import sys
 import types
 
 import pytest
 from textual import events
 from textual._xterm_parser import XTermParser
+from textual.message import Message
 
 from vibe.cli.textual_ui import terminal_input_filter
 from vibe.cli.textual_ui.terminal_input_filter import (
@@ -122,6 +124,18 @@ def test_parser_buffers_device_attributes_across_input_chunks(split_at: int) -> 
     assert any(isinstance(t, events.Key) and t.key == "up" for t in tokens)
 
 
+def test_parser_drops_repeated_device_attributes_one_character_at_a_time() -> None:
+    parser = FilteringXTermParser()
+    emitted: list[Message] = []
+
+    for character in DEVICE_ATTRIBUTES_REPORTS[0] * 3:
+        emitted.extend(parser.feed(character))
+    emitted.extend(parser.feed("a"))
+
+    keys = [event for event in emitted if isinstance(event, events.Key)]
+    assert [(event.key, event.character) for event in keys] == [("a", "a")]
+
+
 @pytest.mark.parametrize("seq", NOISE)
 def test_parser_emits_no_keys_for_noise(seq: str) -> None:
     tokens = list(FilteringXTermParser().feed(seq))
@@ -203,7 +217,12 @@ def restore_driver_parsers() -> Iterator[None]:
 
 @pytest.mark.usefixtures("restore_driver_parsers")
 def test_patch_driver_parser_leaves_no_driver_module_unfiltered() -> None:
-    for name in ("linux_driver", "linux_inline_driver", "web_driver"):
+    driver_names = (
+        ("windows_driver", "win32")
+        if os.name == "nt"
+        else ("linux_driver", "linux_inline_driver", "web_driver")
+    )
+    for name in driver_names:
         importlib.import_module(_DRIVER_MODULE_PREFIX + name)
 
     patch_driver_parser()
@@ -216,7 +235,8 @@ def test_patch_driver_parser_leaves_no_driver_module_unfiltered() -> None:
     assert set(patched.values()) == {FilteringXTermParser}
     assert patched.keys() >= {
         _DRIVER_MODULE_PREFIX + name
-        for name in ("linux_driver", "linux_inline_driver", "web_driver")
+        for name in driver_names
+        if name != "windows_driver"
     }
 
 

@@ -17,6 +17,7 @@ from vibe.app_server._utils import now_ms
 from vibe.app_server._worktree_effects import WorktreeEffect
 from vibe.app_server.config import (
     AudioProviderView,
+    AutonomyConfigView,
     ConfigView,
     ModelConfigView,
     SpeechConfigView,
@@ -147,6 +148,13 @@ def project_config_view(
             ),
         ),
         validation_warnings=list(config.validation_warnings),
+        autonomy=AutonomyConfigView(
+            enabled=config.autonomy.enabled,
+            aggressiveness=config.autonomy.aggressiveness.value,
+            goal_advisor_model=config.autonomy.goal_advisor_model,
+            reviewer_model=config.autonomy.reviewer_model,
+            max_parallel_subagents=config.autonomy.max_parallel_subagents,
+        ),
     )
 
 

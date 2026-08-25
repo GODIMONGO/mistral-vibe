@@ -189,6 +189,50 @@ class ConfigResource:
                 )
             )
 
+    async def set_effort(self, level: ThinkingLevel) -> None:
+        aliases = {
+            self.current.active_model.alias,
+            self.current.autonomy.goal_advisor_model,
+            self.current.autonomy.reviewer_model,
+        }
+        ops = [
+            ConfigWriteOpWire(
+                op="set",
+                path=f"/models/{_escape_json_pointer_token(alias)}/thinking",
+                value=level,
+            )
+            for alias in sorted(aliases - {""})
+        ]
+        aggressiveness = {
+            "off": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "max": "max",
+        }[level]
+        ops.append(
+            ConfigWriteOpWire(
+                op="set", path="/autonomy/aggressiveness", value=aggressiveness
+            )
+        )
+        response = await self.write(
+            ops, reason="app-server effort update", reload_runtime=True
+        )
+        if response.rejected:
+            raise AppServerResponseError(
+                ProtocolError(
+                    code=ProtocolErrorCode.INVALID_PARAMS,
+                    message="Invalid effort configuration edit",
+                )
+            )
+        if response.failures:
+            raise AppServerResponseError(
+                ProtocolError(
+                    code=ProtocolErrorCode.INTERNAL_ERROR,
+                    message="; ".join(response.failures),
+                )
+            )
+
     async def reload(self, *, reload_runtime: bool = True) -> int:
         client = await self._connection.connect()
         response = validate_wire(

@@ -288,6 +288,10 @@ _MAX_INCOMPLETE_STREAM_RETRIES = 2
 
 
 if TYPE_CHECKING:
+    from vibe.cli.telegram_remote import (
+        TelegramIncomingMessage,
+        TelegramRemoteController,
+    )
     from vibe.cli.textual_ui.screens.config import ConfigWriteResult
     from vibe.cli.textual_ui.widgets.connector_auth_app import ConnectorAuthApp
     from vibe.cli.textual_ui.widgets.mcp_app import MCPApp
@@ -843,6 +847,7 @@ class VibeApp(App):  # noqa: PLR0904
         self._pending_theme: str | None = None
         self._pending_model: str | None = None
         self._pending_thinking: ThinkingLevel | None = None
+        self._telegram_remote: TelegramRemoteController | None = None
 
     @property
     def _effective_theme(self) -> str:
@@ -1985,6 +1990,18 @@ class VibeApp(App):  # noqa: PLR0904
             await self._reload_config()
         finally:
             self._pending_thinking = None
+
+    async def _persist_effort(
+        self, level: ThinkingLevel, *, announce: bool = True
+    ) -> None:
+        await self.app_server.resources.config.set_effort(level)
+        if announce:
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    f"Effort set to **{level}**. Main, advisor, and reviewer "
+                    "thinking plus autonomous subagent intensity were updated."
+                )
+            )
 
     async def _discard_thinking(self) -> None:
         self._pending_thinking = None
@@ -3322,6 +3339,13 @@ class VibeApp(App):  # noqa: PLR0904
 """
         await self._mount_and_scroll(UserCommandMessage(status_text))
 
+    async def _show_subagents(self, **_kwargs: Any) -> None:
+        from vibe.cli.subagents import format_subagent_status
+
+        await self._mount_and_scroll(
+            UserCommandMessage(format_subagent_status(self.app_server.history))
+        )
+
     async def _show_whoami(self, **kwargs: Any) -> None:
         loading = LoadingWidget(status="Loading", show_hint=False)
         await self._loading_area.mount(loading)
@@ -3444,6 +3468,33 @@ class VibeApp(App):  # noqa: PLR0904
         if self._current_bottom_app == BottomApp.ThinkingPicker:
             return
         await self._switch_to_thinking_picker_app()
+
+    async def _effort_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
+        raw_level = cmd_args.strip().lower()
+        if not raw_level:
+            autonomy = self.config.autonomy
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    "## Effort\n\n"
+                    f"- **Thinking**: {self.config.active_model.thinking}\n"
+                    f"- **Autonomy**: {autonomy.aggressiveness}\n"
+                    f"- **Subagent cap**: {autonomy.max_parallel_subagents}\n\n"
+                    "Use `/effort off|low|medium|high|max`."
+                )
+            )
+            return
+        if raw_level not in THINKING_LEVELS:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "Usage: /effort off|low|medium|high|max",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+        level = cast(ThinkingLevel, raw_level)
+        await self._queue.enqueue_command(
+            f"effort {level}", command_payload=partial(self._persist_effort, level)
+        )
 
     async def _show_theme(self, **kwargs: Any) -> None:
         if self._current_bottom_app == BottomApp.ThemePicker:
@@ -3963,6 +4014,193 @@ class VibeApp(App):  # noqa: PLR0904
 
         await self._switch_to_agent("autonomous")
         await self._handle_user_message(objective)
+
+    async def _run_feature_goal(
+        self, cmd_args: str, *, usage: str, instruction: str
+    ) -> None:
+        objective = cmd_args.strip()
+        if not objective:
+            await self._mount_and_scroll(
+                ErrorMessage(usage, collapsed=self._tools_collapsed)
+            )
+            return
+        await self._switch_to_agent("autonomous")
+        await self._handle_user_message(
+            f"{instruction}\n\nUser objective:\n{objective}"
+        )
+
+    async def _ultracode_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
+        if not cmd_args.strip():
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "Usage: /ultracode <objective>", collapsed=self._tools_collapsed
+                )
+            )
+            return
+        await self._persist_effort(cast(ThinkingLevel, "max"), announce=False)
+        await self._run_feature_goal(
+            cmd_args,
+            usage="Usage: /ultracode <objective>",
+            instruction=(
+                "Ultracode mode is active. Make a compact dependency plan immediately. "
+                "Delegate independent inspection and verification to a small bounded "
+                "swarm, serialize mutating work, integrate results at root, run decisive "
+                "checks, and require an evidence-backed reviewer verdict before completion."
+            ),
+        )
+
+    async def _pc_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
+        await self._run_feature_goal(
+            cmd_args,
+            usage="Usage: /pc <objective>",
+            instruction=(
+                "Use the root-owned computer_use tool to observe and control the PC. "
+                "Verify the final visible state and do not delegate mouse or keyboard "
+                "control to parallel workers."
+            ),
+        )
+
+    async def _browser_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
+        await self._run_feature_goal(
+            cmd_args,
+            usage="Usage: /browser <objective>",
+            instruction=(
+                "Use chrome_cdp for structured browser control and JavaScript when the "
+                "local debugging endpoint is available; use computer_use as a visual "
+                "fallback. Inspect and verify the resulting browser state."
+            ),
+        )
+
+    async def _web_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
+        await self._run_feature_goal(
+            cmd_args,
+            usage="Usage: /web <objective>",
+            instruction=(
+                "Load and follow the web-engineering skill. Research unstable facts from "
+                "primary sources, implement proportionally, and verify with tests plus a "
+                "real browser when relevant."
+            ),
+        )
+
+    async def _memory_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
+        await self._run_feature_goal(
+            cmd_args,
+            usage="Usage: /memory <remember, recall, list, or forget request>",
+            instruction=(
+                "Handle this request through the bounded global memory tool. Never store "
+                "credentials or sensitive data, and report exactly what was read or changed."
+            ),
+        )
+
+    async def _telegram_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
+        from vibe.cli.telegram_remote import (
+            TelegramRemoteConfig,
+            TelegramRemoteConfigurationError,
+            TelegramRemoteController,
+        )
+
+        action = cmd_args.strip().lower() or "status"
+        if action == "start":
+            if self._telegram_remote is None:
+                try:
+                    config = TelegramRemoteConfig.from_env()
+                except TelegramRemoteConfigurationError as exc:
+                    await self._mount_and_scroll(
+                        ErrorMessage(str(exc), collapsed=self._tools_collapsed)
+                    )
+                    return
+                self._telegram_remote = TelegramRemoteController(
+                    config, self._handle_telegram_message
+                )
+            status = await self._telegram_remote.start()
+            await self._mount_and_scroll(
+                UserCommandMessage(self._format_telegram_status(status))
+            )
+            return
+        if action == "stop":
+            if self._telegram_remote is not None:
+                await self._telegram_remote.stop()
+            await self._mount_and_scroll(UserCommandMessage("Telegram remote stopped."))
+            return
+        if action in {"status", "chats"}:
+            if self._telegram_remote is None:
+                message = (
+                    "Telegram remote is stopped. Set `TELEGRAM_BOT_TOKEN` and "
+                    "`VIBE_TELEGRAM_ALLOWED_CHAT_IDS`, then run `/telegram start`."
+                )
+            else:
+                message = self._format_telegram_status(self._telegram_remote.status())
+            await self._mount_and_scroll(UserCommandMessage(message))
+            return
+        await self._mount_and_scroll(
+            ErrorMessage(
+                "Usage: /telegram start|stop|status|chats",
+                collapsed=self._tools_collapsed,
+            )
+        )
+
+    @staticmethod
+    def _format_telegram_status(status: Any) -> str:
+        lines = [
+            "## Telegram Remote",
+            "",
+            f"- **Running**: {'yes' if status.running else 'no'}",
+            f"- **Allowlisted chats**: {status.allowed_chat_count}",
+            f"- **Active chats**: {len(status.active_chats)}",
+        ]
+        if status.last_error:
+            lines.append(f"- **Last error**: {status.last_error}")
+        for chat in status.active_chats:
+            lines.append(
+                f"- `{chat.chat_id}`: {chat.message_count} messages; "
+                f"last: {chat.last_text}"
+            )
+        return "\n".join(lines)
+
+    async def _handle_telegram_message(self, message: TelegramIncomingMessage) -> str:
+        text = message.text.strip()
+        command = text.split(None, 1)[0].lower() if text else ""
+        if command in {"/exit", "/logaut", "/logout", "/telegram", "/tg"}:
+            return "This lifecycle command is available only in the local Vibe UI."
+        if response := self._telegram_builtin_response(command):
+            return response
+        if not text:
+            return "Empty Telegram messages are ignored."
+        if self._is_busy():
+            return "Vibe is busy. Retry when the current local or remote turn finishes."
+
+        previous = self._get_last_assistant_message_text()
+        await self._dispatch_idle_input(text)
+        task = self._agent_task
+        if task is not None:
+            await task
+        result = self._get_last_assistant_message_text()
+        if result and result != previous:
+            return result
+        return "Command completed in the local Vibe session."
+
+    def _telegram_builtin_response(self, command: str) -> str | None:
+        if command == "/status":
+            stats = self.app_server.resources.runtime.stats
+            return (
+                f"Vibe status: steps={stats.steps}, "
+                f"tokens={stats.session_total_llm_tokens}, "
+                f"busy={'yes' if self._is_busy() else 'no'}"
+            )
+        if command == "/subagents":
+            from vibe.cli.subagents import format_subagent_status
+
+            return format_subagent_status(self.app_server.history)
+        if command == "/chats":
+            if self._telegram_remote is None:
+                return "Telegram remote is stopped."
+            return self._format_telegram_status(self._telegram_remote.status())
+        if command == "/help":
+            return (
+                "Send a normal objective or a Vibe slash command. Remote helpers: "
+                "/status, /subagents, /chats. Lifecycle commands stay local."
+            )
+        return None
 
     async def _compact_history(self, cmd_args: str = "", **kwargs: Any) -> None:
         if self._agent_job_active():
@@ -4970,6 +5208,8 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
     async def _begin_shutdown(self) -> None:
+        if self._telegram_remote is not None:
+            await self._telegram_remote.stop()
         await self._queue.shutdown()
         await self._side_channel.shutdown()
 

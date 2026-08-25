@@ -53,6 +53,14 @@ class ProxySettingsView(ProtocolModel):
     descriptions: dict[str, str]
 
 
+class AutonomyConfigView(ProtocolModel):
+    enabled: bool
+    aggressiveness: str
+    goal_advisor_model: str
+    reviewer_model: str
+    max_parallel_subagents: int
+
+
 class ConfigView(ProtocolModel):
     active_model: ModelConfigView
     # Whether the user has pinned a specific model, vs. the "default" (unpinned)
@@ -79,6 +87,7 @@ class ConfigView(ProtocolModel):
     transcription: TranscriptionConfigView
     speech: SpeechConfigView
     validation_warnings: list[str]
+    autonomy: AutonomyConfigView
 
     def model_display_name(self, alias: str) -> str:
         """User-facing name for a configured alias, or the alias when unknown."""

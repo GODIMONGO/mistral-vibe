@@ -266,6 +266,50 @@ subagents do not receive this tool: autonomous desktop tasks stay on the root ag
 which owns the single local mouse and keyboard. A short capability question such as
 "can you control my computer?" bypasses autonomous planning and is answered directly.
 
+### Chrome CDP Control
+
+The built-in `chrome_cdp` tool manages a Chrome instance started with a local
+DevTools endpoint. It lists tabs, opens and navigates pages, reads a bounded
+accessibility snapshot, clicks and types by node ID, captures screenshots, and
+executes arbitrary page JavaScript with `evaluate`. Both the HTTP endpoint and
+target WebSocket must use explicit loopback IP addresses; remote endpoints and
+redirects are rejected.
+
+```toml
+[tools.chrome_cdp]
+permission = "ask" # use "always" for deliberately unattended local control
+endpoint = "http://127.0.0.1:9222"
+```
+
+Launch a separate Chrome debugging profile on Windows, then use `/browser`:
+
+```powershell
+chrome.exe --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 `
+  --user-data-dir="$env:TEMP\vibe-chrome-cdp"
+```
+
+`evaluate` has the same access as page JavaScript and can read or change data in
+the signed-in browser profile. It has no confirmation beyond the normal
+`chrome_cdp` permission, so keep the endpoint local and prefer a dedicated profile.
+
+### Telegram Remote
+
+Telegram control is opt-in and never starts automatically. Set the bot token in
+`TELEGRAM_BOT_TOKEN` and a strict comma-separated allowlist in
+`VIBE_TELEGRAM_ALLOWED_CHAT_IDS`, then run `/telegram start` locally. Authorized
+chats can submit prompts and slash commands and receive the resulting answer.
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN = "your-bot-token"
+$env:VIBE_TELEGRAM_ALLOWED_CHAT_IDS = "123456789"
+vibe
+# Inside Vibe: /telegram start
+```
+
+Use `/telegram status|chats|stop` to inspect or disarm it. `/status`, `/subagents`,
+and `/chats` provide compact remote views; process lifecycle commands remain local.
+Unauthorized chats are ignored and the token is never stored in `config.toml`.
+
 ### Web Search
 
 The built-in `web_search` tool can use Mistral's hosted search or a bounded public
@@ -472,6 +516,12 @@ from the partial response. Add optional guidance after the command, for example
 Use `/goal <objective>` to switch to the autonomous agent and start a goal with
 mandatory planning, delegation, fresh verification, and final review. If another
 turn is running, the command waits in the main input queue.
+
+Additional autonomous commands include `/subagents`, `/effort
+off|low|medium|high|max`, `/ultracode <objective>`, `/pc`, `/browser`, `/web`, and
+`/memory`. `/chats` opens the local session picker. `/logaut` and `/logout` are
+exit aliases. The built-in `/web-engineering` skill adds primary-source research,
+security, accessibility, performance, and real-browser verification.
 
 ### Custom Slash Commands via Skills
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from vibe.app_server.config import (
     AudioProviderView,
+    AutonomyConfigView,
     ConfigView,
     ModelConfigView,
     SpeechConfigView,
@@ -76,4 +77,11 @@ def build_test_app_config(
             ),
         ),
         validation_warnings=[],
+        autonomy=AutonomyConfigView(
+            enabled=False,
+            aggressiveness="medium",
+            goal_advisor_model="",
+            reviewer_model="",
+            max_parallel_subagents=4,
+        ),
     )

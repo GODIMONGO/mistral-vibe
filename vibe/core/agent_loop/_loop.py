@@ -32,8 +32,8 @@ from vibe.core.autonomy import (
     AutonomyPlan,
     AutonomyPlanTask,
     AutonomyPolicy,
-    is_computer_control_capability_question,
     parse_advisor_plan,
+    should_skip_autonomy,
 )
 from vibe.core.checkpoints import Checkpointer, CheckpointRecorder, FileStore
 from vibe.core.compaction import (
@@ -1762,7 +1762,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if injected and self._autonomy_coordinator is not None:
             return self._autonomy_coordinator
         self._autonomy_evidence = []
-        if is_computer_control_capability_question(objective):
+        if should_skip_autonomy(objective):
             self._autonomy_coordinator = None
             return None
         self._autonomy_coordinator = self._new_autonomy_coordinator()

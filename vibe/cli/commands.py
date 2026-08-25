@@ -74,6 +74,15 @@ class CommandRegistry:
                 handler="_show_thinking",
                 side_channel=True,
             ),
+            "effort": Command(
+                aliases=frozenset(["/effort"]),
+                description=(
+                    "Set thinking and autonomous subagent intensity: "
+                    "off, low, medium, high, or max"
+                ),
+                handler="_effort_command",
+                side_channel=True,
+            ),
             "reload": Command(
                 aliases=frozenset(["/reload"]),
                 description="Reload configuration, agent instructions, and skills from disk",
@@ -128,7 +137,15 @@ class CommandRegistry:
                 handler="_compact_history",
             ),
             "exit": Command(
-                aliases=frozenset(["/exit", "exit", "quit", ":q", ":quit"]),
+                aliases=frozenset([
+                    "/exit",
+                    "/logaut",
+                    "/logout",
+                    "exit",
+                    "quit",
+                    ":q",
+                    ":quit",
+                ]),
                 description="Exit the application",
                 handler="_exit_app",
                 exits=True,
@@ -138,6 +155,12 @@ class CommandRegistry:
                 aliases=frozenset(["/status"]),
                 description="Display agent statistics",
                 handler="_show_status",
+                side_channel=True,
+            ),
+            "subagents": Command(
+                aliases=frozenset(["/subagents"]),
+                description="Show active and recent subagent tasks",
+                handler="_show_subagents",
                 side_channel=True,
             ),
             "whoami": Command(
@@ -165,7 +188,7 @@ class CommandRegistry:
                 side_channel=True,
             ),
             "resume": Command(
-                aliases=frozenset(["/resume", "/continue"]),
+                aliases=frozenset(["/resume", "/continue", "/chats"]),
                 description="Browse, resume, or delete saved sessions",
                 handler="_show_session_picker",
             ),
@@ -221,6 +244,37 @@ class CommandRegistry:
                     "verification, and review"
                 ),
                 handler="_goal_command",
+            ),
+            "ultracode": Command(
+                aliases=frozenset(["/ultracode"]),
+                description="Run a difficult objective with max effort and a bounded swarm",
+                handler="_ultracode_command",
+            ),
+            "pc": Command(
+                aliases=frozenset(["/pc", "/computer"]),
+                description="Run an autonomous PC-control objective",
+                handler="_pc_command",
+            ),
+            "browser": Command(
+                aliases=frozenset(["/browser", "/chrome"]),
+                description="Run an autonomous browser/CDP objective",
+                handler="_browser_command",
+            ),
+            "web": Command(
+                aliases=frozenset(["/web"]),
+                description="Run an evidence-backed web engineering objective",
+                handler="_web_command",
+            ),
+            "memory": Command(
+                aliases=frozenset(["/memory", "/remember"]),
+                description="Read or update global memory through the memory tool",
+                handler="_memory_command",
+            ),
+            "telegram": Command(
+                aliases=frozenset(["/telegram", "/tg"]),
+                description="Manage the allowlisted Telegram remote controller",
+                handler="_telegram_command",
+                side_channel=True,
             ),
             "loop": Command(
                 aliases=frozenset(["/loop"]),

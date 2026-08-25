@@ -221,6 +221,19 @@ verification to `root`, preventing parallel agents from racing for the mouse and
 keyboard. Pure capability questions bypass the autonomous advisor and are answered
 directly.
 
+`chrome_cdp` controls Chrome through an explicit loopback DevTools endpoint. It
+lists tabs, opens/navigates pages, snapshots the accessibility tree, clicks/types
+by node ID, captures model-visible screenshots, and executes arbitrary page
+JavaScript with `evaluate`. Configure `[tools.chrome_cdp]` with endpoint
+`http://127.0.0.1:9222`; Chrome must already be running with remote debugging.
+Endpoints, inputs, outputs, and images are bounded. `evaluate` can read or mutate
+signed-in page data and follows the normal tool permission.
+
+Telegram remote control is opt-in. Set `TELEGRAM_BOT_TOKEN` and the strict
+comma-separated `VIBE_TELEGRAM_ALLOWED_CHAT_IDS`, then locally run `/telegram
+start`. It never auto-starts, ignores unauthorized chats, bounds messages, and
+does not expose the token. `/telegram status|chats|stop` manages it.
+
 ### Automatic Model Fallback
 
 `fallback_model = "ALIAS"` treats the active Mistral model as enhanced access and
@@ -819,6 +832,15 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/config` - Full-screen settings browser. Fields show their value and origin layer (default / TOML / env / override). Type to filter, arrows to move, Enter to edit; booleans toggle, closed-set fields (theme, models) pick from a list, scalars edit inline, complex fields open a JSON editor. The edit modal shows an inspector of the layers setting the field; edits persist to the TOML layer by default, `Tab` targets the ephemeral session override (until restart), and `Ctrl+R` clears the field one writable layer at a time toward the default. The `tools` field opens a grouped tool list with a per-tool config editor (permission, allow/deny lists, `Ctrl+E` for raw JSON). Enabling/disabling whole MCP servers or connectors stays in `/mcp`.
 - `/model` - Select active model
 - `/thinking` - Select thinking level
+- `/effort off|low|medium|high|max` - Set main/advisor/reviewer thinking and
+  autonomous subagent intensity.
+- `/subagents` - Show active and recent child-agent tasks.
+- `/ultracode <objective>` - Use max effort and a small bounded swarm.
+- `/pc <objective>` - Run a root-owned computer-control objective.
+- `/browser <objective>` - Run a Chrome CDP/browser-control objective.
+- `/web <objective>` - Run an evidence-backed web-engineering objective.
+- `/memory <request>` - Read or update bounded global memory.
+- `/telegram start|stop|status|chats` - Manage Telegram remote control.
 - `/theme` - Select Textual UI theme; `auto` follows terminal/OS appearance (persisted in config)
 - `/reload` - Reload configuration, agent instructions, and skills from disk
 - `/clear`, `/new` - Start a new conversation. Optionally pass a prompt to seed it
@@ -850,7 +872,7 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/mcp login <alias>` - Start OAuth login for an MCP server
 - `/mcp logout <alias>` - Log out from an MCP server and delete stored OAuth
   secrets
-- `/resume` (or `/continue`) - Browse and resume past sessions for the current
+- `/resume` (or `/continue`, `/chats`) - Browse and resume past sessions for the current
   folder. The picker header shows the folder being listed. Press `d` twice to
   delete a saved session; the active session cannot be deleted here.
 - `/rewind` - Rewind to a previous message. Also triggered by pressing `Esc`
@@ -873,7 +895,7 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/unleanstall` - Uninstall the Lean 4 agent
 - `/data-retention` - Show data retention information
 - `/teleport` - Teleport session to Vibe Code Web (only available when Vibe Code is enabled)
-- `/exit` - Exit the application
+- `/exit` (or `/logaut`, `/logout`) - Exit the application
 
 ## File Mentions (`@`)
 

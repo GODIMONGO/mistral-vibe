@@ -94,6 +94,31 @@ async def test_computer_capability_question_skips_slow_autonomy_bootstrap() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prompt", ["hi", "Hello!", "привет", "спасибо", "ok"])
+async def test_trivial_conversation_does_not_start_advisor_or_subagents(
+    prompt: str,
+) -> None:
+    backend = FakeBackend([[mock_llm_chunk(content="Brief reply")]])
+    config = build_test_vibe_config(
+        enabled_tools=["task", "todo"],
+        tools={
+            "task": {
+                "permission": "always",
+                "allowlist": ["goal-advisor", "reviewer", "worker", "explore"],
+            }
+        },
+        autonomy=AutonomyConfig(enabled=True, require_worker=True),
+    )
+    agent = build_test_agent_loop(config=config, backend=backend)
+    runner = _AdvisorRunner()
+
+    _ = [event async for event in agent.act(prompt, subagent_runner=runner)]
+
+    assert runner.calls == []
+    assert len(backend.requests_messages) == 1
+
+
+@pytest.mark.asyncio
 async def test_root_desktop_plan_stays_on_main_agent() -> None:
     complete_todo = ToolCall(
         id="complete-desktop",

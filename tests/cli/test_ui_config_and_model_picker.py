@@ -373,3 +373,17 @@ async def test_thinking_picker_select_high() -> None:
             await pilot.pause(0.2)
 
         set_thinking.assert_awaited_once_with("high")
+
+
+@pytest.mark.asyncio
+async def test_effort_command_persists_model_and_subagent_intensity() -> None:
+    app = build_test_vibe_app(config=_make_config_with_models())
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        with patch.object(
+            app.app_server.resources.config, "set_effort", new=AsyncMock()
+        ) as set_effort:
+            await app._effort_command("max")
+            await pilot.pause(0.2)
+
+        set_effort.assert_awaited_once_with("max")

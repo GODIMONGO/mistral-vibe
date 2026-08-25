@@ -36,6 +36,13 @@ class TestBuiltinSkills:
             in BUILTIN_SKILLS["vibe"].prompt
         )
 
+    def test_web_engineering_skill_is_registered_and_invocable(self) -> None:
+        skill = BUILTIN_SKILLS["web-engineering"]
+
+        assert skill.user_invocable is True
+        assert "primary documentation" in skill.prompt
+        assert "chrome_cdp" in skill.prompt
+
     def test_discovers_builtin_skills(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("vibe.core.skills.manager.BUILTIN_SKILLS", BUILTIN_SKILLS)
         config = build_test_vibe_config()

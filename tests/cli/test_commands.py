@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from vibe.cli.commands import Command, CommandContext, CommandRegistry
 
 
@@ -209,6 +211,34 @@ class TestCommandRegistry:
         assert cmd.side_channel is False
         assert cmd_args == "finish the migration"
 
+    @pytest.mark.parametrize(
+        ("text", "name", "handler"),
+        [
+            ("/effort max", "effort", "_effort_command"),
+            ("/subagents", "subagents", "_show_subagents"),
+            ("/ultracode fix it", "ultracode", "_ultracode_command"),
+            ("/pc open settings", "pc", "_pc_command"),
+            ("/browser inspect tab", "browser", "_browser_command"),
+            ("/web ship app", "web", "_web_command"),
+            ("/memory remember this", "memory", "_memory_command"),
+            ("/telegram status", "telegram", "_telegram_command"),
+        ],
+    )
+    def test_autonomy_feature_commands_are_registered(
+        self, text: str, name: str, handler: str
+    ) -> None:
+        registry = CommandRegistry()
+
+        result = registry.parse_command(text)
+
+        assert result is not None
+        assert result[0] == name
+        assert result[1].handler == handler
+
+    def test_chats_alias_opens_session_picker(self) -> None:
+        registry = CommandRegistry()
+        assert registry.get_command_name("/chats") == "resume"
+
     def test_api_key_command_registration(self) -> None:
         registry = CommandRegistry()
         result = registry.parse_command("/api-key advisor-smart")
@@ -222,7 +252,7 @@ class TestCommandRegistry:
 
     def test_exit_command_accepts_bare_synonyms(self) -> None:
         registry = CommandRegistry()
-        for alias in ["/exit", "exit", "quit", ":q", ":quit"]:
+        for alias in ["/exit", "/logaut", "/logout", "exit", "quit", ":q", ":quit"]:
             assert registry.get_command_name(alias) == "exit", alias
             result = registry.parse_command(alias)
             assert result is not None, alias

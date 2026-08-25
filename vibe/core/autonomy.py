@@ -115,11 +115,26 @@ _COMPUTER_CAPABILITY_QUESTION = re.compile(
     re.IGNORECASE,
 )
 
+_TRIVIAL_CONVERSATION = re.compile(
+    r"^(?:hi|hello|hey|thanks|thank\s+you|ok(?:ay)?|"
+    r"привет|здравствуй(?:те)?|спасибо|ок|окей|понял(?:а)?)"
+    r"[\s,.!?👋]*$",
+    re.IGNORECASE,
+)
+
 
 def is_computer_control_capability_question(objective: str) -> bool:
     """Return whether *objective* only asks if desktop control is available."""
     normalized = " ".join(objective.split())
     return bool(_COMPUTER_CAPABILITY_QUESTION.fullmatch(normalized))
+
+
+def should_skip_autonomy(objective: str) -> bool:
+    """Return whether a prompt is conversational and needs no autonomous plan."""
+    normalized = " ".join(objective.split())
+    return bool(_TRIVIAL_CONVERSATION.fullmatch(normalized)) or bool(
+        _COMPUTER_CAPABILITY_QUESTION.fullmatch(normalized)
+    )
 
 
 class AutonomyDecisionKind(StrEnum):
@@ -380,4 +395,5 @@ __all__ = [
     "AutonomyPolicy",
     "is_computer_control_capability_question",
     "parse_advisor_plan",
+    "should_skip_autonomy",
 ]

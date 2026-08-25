@@ -217,7 +217,7 @@ require_review = true
 Vibe keeps autonomous runs token-efficient by compacting long objectives before
 reusing them across advisor, worker, and reviewer calls, deduplicating reviewer
 evidence, and retaining the useful head and final verdict of oversized subagent
-results. New models auto-compact at 100,000 context tokens by default; lower
+results. New models auto-compact at 200,000 context tokens by default; lower
 `auto_compact_threshold` per model when optimizing a long-running session for
 minimum repeated input.
 
@@ -227,6 +227,10 @@ thinking to the main model, advisor, and reviewer, enables autonomous mode, and
 sets the subagent limit to 16. `/ultracode <objective>` applies that preset before
 running a difficult objective; `/ultracode` without an objective opens the same
 panel with UltraCode selected.
+
+While a todo plan exists, a persistent task status bar above the input shows
+the active task, completed tasks, waiting tasks, and cancelled tasks. It updates
+from live todo events and restores the latest plan when a session is resumed.
 
 `low` minimizes concurrency and review retries; `max` uses the configured limits
 and refreshes compact context most often. Subagent output and the number of live

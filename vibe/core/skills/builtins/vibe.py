@@ -155,7 +155,7 @@ enable_notifications = true
 enable_system_trust_store = false  # Use OS trust store for outbound HTTPS
 api_timeout = 720.0               # API request timeout in seconds
 api_retry_max_elapsed_time = 300.0  # Retry budget for retryable API failures in seconds
-auto_compact_threshold = 100000   # Token count before auto-compaction
+auto_compact_threshold = 200000   # Token count before auto-compaction
 
 # Git commit behavior
 include_commit_signature = true   # Add "Co-Authored-By" to commits
@@ -211,8 +211,12 @@ model.
 Autonomous context is compacted before it is repeated across advisor, worker,
 and reviewer calls. Oversized subagent results retain their head and final
 verdict, and reviewer evidence is deduplicated. Lower a model's
-`auto_compact_threshold` below the 100000 default for still earlier history
+`auto_compact_threshold` below the 200000 default for earlier history
 compaction and lower repeated-input usage.
+
+The Textual UI keeps a persistent task status bar above the input while a todo
+plan exists. It shows the current, completed, waiting, and cancelled tasks,
+updates from live todo events, and restores the latest plan after resume.
 
 On Windows, `computer_use` provides bounded structured observation, one
 overwriting PNG screenshot in the session scratchpad, focus, click, Unicode typing,
@@ -308,7 +312,7 @@ input_price = 1.5
 output_price = 7.5
 cached_input_price = 0.15         # per million cached input tokens; omit to bill at input_price
 thinking = "high"                 # "off", "low", "medium", "high", "max"
-auto_compact_threshold = 100000
+auto_compact_threshold = 200000
 supports_images = true            # vision-capable; allows @-mentioned images
 
 [[models]]

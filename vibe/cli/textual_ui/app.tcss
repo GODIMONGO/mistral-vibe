@@ -99,6 +99,17 @@ TextArea > .text-area--cursor {
     layout: horizontal;
 }
 
+#task-status-bar {
+    width: 100%;
+    height: auto;
+    max-height: 5;
+    margin: 0 0 1 0;
+    padding: 0;
+    border-top: solid $foreground-muted;
+    overflow: hidden;
+    text-wrap: nowrap;
+}
+
 #spacer {
     width: 1fr;
     height: auto;

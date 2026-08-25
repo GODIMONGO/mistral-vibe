@@ -47,6 +47,7 @@ def _make_args(**overrides: object) -> argparse.Namespace:
         "check_upgrade": False,
         "setup": False,
         "setup_model": None,
+        "add_api_key": None,
         "workdir": None,
         "worktree": None,
         "add_dir": [],

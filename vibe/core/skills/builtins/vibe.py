@@ -188,7 +188,7 @@ Autonomous mode requires advisor consultation, a terminal todo plan, worker
 delegation, fresh evidence after the last mutation, and a final reviewer `PASS`.
 Its read-only `swarm` is concurrency-bounded. Child output and resident runtimes
 are bounded; persisted child sessions reload on demand. Use
-`vibe --setup --setup-model ALIAS` to configure the exact provider credential for
+`vibe --add-api-key ALIAS` to configure the exact provider credential for
 an advisor/reviewer model without exposing the key. A configured Devstral alias is
 the recommended Mistral-backed advisor; an empty alias safely follows the active
 model.
@@ -203,9 +203,10 @@ are not hidden. Streaming switches only before the first chunk, so two providers
 answers are never combined. Empty disables fallback.
 
 The alias must refer to a `[[models]]` entry whose `[[providers]]` entry uses a
-separate `api_key_env_var`. Run `vibe --setup --setup-model ALIAS` to enter that
-credential through the masked keyring/`.env` flow. Never put the key itself in
-`config.toml`.
+separate `api_key_env_var`. Run `vibe --add-api-key ALIAS` to enter or replace
+that credential through the masked keyring/`.env` flow. It is the short form of
+`vibe --setup --setup-model ALIAS`. Never put the key itself in `config.toml` or
+as a command-line argument.
 
 ### OpenTelemetry Tracing
 

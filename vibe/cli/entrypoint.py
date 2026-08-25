@@ -133,6 +133,14 @@ def parse_arguments() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--add-api-key",
+        metavar="MODEL_ALIAS",
+        help=(
+            "Securely add or replace the API key for a configured model alias, "
+            "then exit. This is the short form of --setup --setup-model ALIAS."
+        ),
+    )
+    parser.add_argument(
         "--check-upgrade",
         action="store_true",
         help="Check for a Vibe update now, prompt to install it, and exit",
@@ -192,6 +200,11 @@ def parse_arguments() -> argparse.Namespace:
         help="Resume a session. Without SESSION_ID, shows an interactive picker.",
     )
     args = parser.parse_args()
+    if args.add_api_key:
+        if args.setup_model and args.setup_model != args.add_api_key:
+            parser.error("--add-api-key cannot target a different --setup-model")
+        args.setup = True
+        args.setup_model = args.add_api_key
     if args.setup_model and not args.setup:
         parser.error("--setup-model requires --setup")
     return args

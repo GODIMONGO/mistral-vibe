@@ -58,6 +58,32 @@ def test_setup_model_is_parseable_with_setup(monkeypatch: pytest.MonkeyPatch) ->
     assert args.setup_model == "advisor-smart"
 
 
+def test_add_api_key_enables_setup_for_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = _parse(monkeypatch, ["--add-api-key", "advisor-smart"])
+
+    assert args.setup is True
+    assert args.setup_model == "advisor-smart"
+    assert args.add_api_key == "advisor-smart"
+
+
+def test_add_api_key_rejects_different_setup_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse(
+            monkeypatch,
+            [
+                "--setup",
+                "--setup-model",
+                "advisor-smart",
+                "--add-api-key",
+                "fallback-smart",
+            ],
+        )
+
+    assert exc_info.value.code == 2
+
+
 def test_experimental_harness_is_hidden_without_package(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

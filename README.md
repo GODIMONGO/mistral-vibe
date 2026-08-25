@@ -187,7 +187,7 @@ when using a Mistral API key. Configure the key for that model's provider with t
 masked setup flow:
 
 ```bash
-vibe --setup --setup-model devstral-small
+vibe --add-api-key devstral-small
 ```
 
 Then add the autonomy policy to `config.toml`:
@@ -210,8 +210,9 @@ require_review = true
 and refreshes compact context most often. Subagent output and the number of live
 child runtimes are bounded; completed evicted sessions remain persisted and are
 loaded again on demand. If the role model uses another provider, define that
-provider/model normally and run `--setup-model` with its exact alias. Credentials
-stay in the environment/keyring flow and are redacted from config introspection.
+provider/model normally and run `vibe --add-api-key ALIAS` with its exact alias.
+Credentials stay in the environment/keyring flow and are redacted from config
+introspection.
 
 ### Interactive User Questions
 
@@ -540,8 +541,12 @@ alias = "my-user-model"
 Store that provider's credential with the masked setup flow:
 
 ```bash
-vibe --setup --setup-model my-user-model
+vibe --add-api-key my-user-model
 ```
+
+This is the short form of
+`vibe --setup --setup-model my-user-model`. Re-run it to replace an expired key;
+the secret is entered in a password field and is never passed on the command line.
 
 Fallback is session-sticky after Mistral returns an authentication, payment, or
 quota-exhaustion error (HTTP 401/402, or a quota-specific 403/429). Ordinary rate

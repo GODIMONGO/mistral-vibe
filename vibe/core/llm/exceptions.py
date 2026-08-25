@@ -25,6 +25,20 @@ _RESPONSE_TOO_LONG_SUBSTRINGS = ("max_tokens_exceeded", "finish_reason=length")
 
 _INVALID_MODEL_SUBSTRINGS = ("invalid_model",)
 
+_QUOTA_EXHAUSTED_SUBSTRINGS = (
+    "insufficient_quota",
+    "quota exhausted",
+    "quota exceeded",
+    "credits exhausted",
+    "billing credits",
+    "subscription exhausted",
+)
+
+
+def is_quota_exhaustion_text(text: str) -> bool:
+    body = text.lower()
+    return any(marker in body for marker in _QUOTA_EXHAUSTED_SUBSTRINGS)
+
 
 class ErrorDetail(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -94,6 +108,14 @@ class BackendError(RuntimeError):
             return False
         body = (self.body_text or "").lower()
         return any(s in body for s in _INVALID_MODEL_SUBSTRINGS)
+
+    @property
+    def is_failover_eligible(self) -> bool:
+        if self.status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.PAYMENT_REQUIRED}:
+            return True
+        if self.status not in {HTTPStatus.FORBIDDEN, HTTPStatus.TOO_MANY_REQUESTS}:
+            return False
+        return is_quota_exhaustion_text(self.body_text)
 
     def _fmt(self) -> str:
         if self.status == HTTPStatus.UNAUTHORIZED:

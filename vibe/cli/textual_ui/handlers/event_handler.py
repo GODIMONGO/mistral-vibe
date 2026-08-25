@@ -33,6 +33,7 @@ from vibe.app_server.models import (
     PublicMessageEntry,
     PublicNoticeEntry,
     PublicReasoningEntry,
+    PublicRetryCategory,
     ScheduledLoopFiredNoticeDetail,
     SessionTitleUpdatedNoticeDetail,
     SkippedEffectState,
@@ -135,8 +136,13 @@ class EventHandler:
                 return await self._handle_entry_added(entry, loading_widget)
             case HistoryEntryUpdated() as update:
                 await self._handle_entry_updated(update, loading_widget)
-            case TurnRetrying() if loading_widget is not None:
-                loading_widget.set_status(RETRYING_LOADING_STATUS)
+            case TurnRetrying(params=params) if loading_widget is not None:
+                status = (
+                    "Switching model"
+                    if params.category is PublicRetryCategory.MODEL_FALLBACK
+                    else RETRYING_LOADING_STATUS
+                )
+                loading_widget.set_status(status)
             case _:
                 pass
         return None

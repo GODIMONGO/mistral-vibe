@@ -264,6 +264,7 @@ class PublicTurnStopReason(StrEnum):
 
 
 class PublicRetryCategory(StrEnum):
+    MODEL_FALLBACK = auto()
     RATE_LIMITED = auto()
     SERVER_ERROR = auto()
     TIMED_OUT = auto()

@@ -126,6 +126,7 @@ from `~/.vibe/prompts/`, and finally from the built-in bundled prompts.
 ```toml
 # Model selection
 active_model = "mistral-medium-3.5"  # Model alias to pin; omit or set "" to follow the server-routed default
+fallback_model = ""                  # User-funded fallback alias; empty disables
 
 # UI preferences
 theme = "auto"  # Follow terminal background, then OS light/dark preference
@@ -191,6 +192,20 @@ are bounded; persisted child sessions reload on demand. Use
 an advisor/reviewer model without exposing the key. A configured Devstral alias is
 the recommended Mistral-backed advisor; an empty alias safely follows the active
 model.
+
+### Automatic Model Fallback
+
+`fallback_model = "ALIAS"` treats the active Mistral model as enhanced access and
+uses the configured fallback model when Mistral credentials are unavailable or
+Mistral returns HTTP 401/402 or a quota-specific HTTP 403/429. The switch is sticky
+for the root session and its subagents. Ordinary rate limits and other API errors
+are not hidden. Streaming switches only before the first chunk, so two providers'
+answers are never combined. Empty disables fallback.
+
+The alias must refer to a `[[models]]` entry whose `[[providers]]` entry uses a
+separate `api_key_env_var`. Run `vibe --setup --setup-model ALIAS` to enter that
+credential through the masked keyring/`.env` flow. Never put the key itself in
+`config.toml`.
 
 ### OpenTelemetry Tracing
 

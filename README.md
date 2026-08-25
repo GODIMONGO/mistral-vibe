@@ -515,6 +515,40 @@ Vibe supports multiple ways to configure your API keys:
 
 **Note**: The `.env` file is specifically for API keys and other provider credentials. General Vibe configuration should be done in `config.toml`.
 
+#### Automatic fallback to your API
+
+Bundled Mistral access can be used as the primary enhanced model while a model
+paid for with your own API key remains available as a fallback. Set
+`fallback_model` to the exact configured model alias:
+
+```toml
+active_model = "mistral-medium-3.5"
+fallback_model = "my-user-model"
+
+[[providers]]
+name = "user-api"
+api_base = "https://your-provider.example/v1"
+api_key_env_var = "USER_MODEL_API_KEY"
+api_style = "openai"
+
+[[models]]
+name = "provider-model-name"
+provider = "user-api"
+alias = "my-user-model"
+```
+
+Store that provider's credential with the masked setup flow:
+
+```bash
+vibe --setup --setup-model my-user-model
+```
+
+Fallback is session-sticky after Mistral returns an authentication, payment, or
+quota-exhaustion error (HTTP 401/402, or a quota-specific 403/429). Ordinary rate
+limits, server errors, invalid requests, and context-limit errors remain visible.
+For streaming calls, Vibe switches only before the first response chunk, avoiding
+mixed answers. Set `fallback_model = ""` to disable the feature.
+
 ### Custom Domains
 
 If you use a Mistral-compatible deployment instead of the default `console.mistral.ai` / `api.mistral.ai`, you can point browser sign-in at it. The credential is still a Mistral API key.

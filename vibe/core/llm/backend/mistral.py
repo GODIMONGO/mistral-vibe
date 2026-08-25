@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable, Sequence
 from concurrent.futures import CancelledError, Future
 from contextlib import suppress
+from http import HTTPStatus
 import json
 import logging
 import types
@@ -39,7 +40,7 @@ from mistralai.client.utils.retries import BackoffStrategy, RetryConfig
 from mistralai.extra.observability.telemetry import configure_telemetry
 
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
-from vibe.core.llm.exceptions import BackendErrorBuilder
+from vibe.core.llm.exceptions import BackendErrorBuilder, is_quota_exhaustion_text
 from vibe.core.types import (
     AvailableTool,
     Content,
@@ -261,12 +262,14 @@ class MistralBackend:
         retry_max_elapsed_time: float = 300.0,
         enable_otel: bool = False,
         on_retry: RetryObserver | None = None,
+        fail_fast_on_quota_exhaustion: bool = False,
     ) -> None:
         self._client: Mistral | None = None
         self._http_client: VibeAsyncHTTPClient | None = None
         self._provider = provider
         self._enable_otel = enable_otel
         self._on_retry = on_retry
+        self._fail_fast_on_quota_exhaustion = fail_fast_on_quota_exhaustion
         self._loop: asyncio.AbstractEventLoop | None = None
         self._mapper = MistralMapper()
         self._api_key = resolve_api_key(self._provider.api_key_env_var)
@@ -304,6 +307,13 @@ class MistralBackend:
         )
 
     async def _on_response(self, response: httpx.Response) -> None:
+        if (
+            self._fail_fast_on_quota_exhaustion
+            and response.status_code == HTTPStatus.TOO_MANY_REQUESTS
+        ):
+            await response.aread()
+            if is_quota_exhaustion_text(response.text):
+                response.raise_for_status()
         if response.status_code in _RETRYABLE_STATUS_CODES:
             await self._notice_retry(RetryReason.from_http_status(response.status_code))
 
@@ -454,6 +464,18 @@ class MistralBackend:
                 has_tools=bool(tools),
                 tool_choice=tool_choice,
             ) from e
+        except httpx.HTTPStatusError as e:
+            raise BackendErrorBuilder.build_http_error(
+                provider=self._provider.name,
+                endpoint=self._server_url,
+                error=e,
+                response=e.response,
+                model=model.name,
+                messages=messages,
+                temperature=temperature,
+                has_tools=bool(tools),
+                tool_choice=tool_choice,
+            ) from e
         except httpx.RequestError as e:
             raise BackendErrorBuilder.build_request_error(
                 provider=self._provider.name,
@@ -544,6 +566,18 @@ class MistralBackend:
                 endpoint=self._server_url,
                 error=e,
                 response=e.raw_response,
+                model=model.name,
+                messages=messages,
+                temperature=temperature,
+                has_tools=bool(tools),
+                tool_choice=tool_choice,
+            ) from e
+        except httpx.HTTPStatusError as e:
+            raise BackendErrorBuilder.build_http_error(
+                provider=self._provider.name,
+                endpoint=self._server_url,
+                error=e,
+                response=e.response,
                 model=model.name,
                 messages=messages,
                 temperature=temperature,

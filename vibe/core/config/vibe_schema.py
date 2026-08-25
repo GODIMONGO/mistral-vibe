@@ -261,6 +261,7 @@ class VibeConfigSchema(ConfigSchema):
 
     # Models
     active_model: Annotated[str, WithReplaceMerge()] = UNPINNED_ACTIVE_MODEL
+    fallback_model: Annotated[str, WithReplaceMerge()] = ""
     # Experiment-routed default model alias, populated at runtime by the
     # GrowthBook layer. It only takes effect when ``active_model`` is unpinned.
     routed_default_model: Annotated[str, WithReplaceMerge()] = ""
@@ -574,6 +575,15 @@ class VibeConfigSchema(ConfigSchema):
             f"Provider '{model.provider}' for model '{model.name}' not found in configuration."
         )
 
+    def get_fallback_model(self) -> ModelConfig | None:
+        if not self.fallback_model:
+            return None
+        if model := self.available_models().get(self.fallback_model):
+            return model
+        raise ValueError(
+            f"Fallback model '{self.fallback_model}' not found in configuration."
+        )
+
     @property
     def vibe_code_api_key(self) -> str:
         return resolve_api_key(self.vibe_code_api_key_env_var) or ""
@@ -803,13 +813,38 @@ class VibeConfigSchema(ConfigSchema):
         return self
 
     @model_validator(mode="after")
+    def _check_fallback_model(self) -> VibeConfigSchema:
+        if fallback := self.get_fallback_model():
+            self.get_provider_for_model(fallback)
+        return self
+
+    def _has_model_credentials(self, model: ModelConfig) -> bool:
+        provider = self.get_provider_for_model(model)
+        return not provider.api_key_env_var or bool(
+            resolve_api_key(provider.api_key_env_var)
+        )
+
+    def _fallback_covers_missing_credentials(self, model: ModelConfig) -> bool:
+        if self.get_provider_for_model(model).backend is not Backend.MISTRAL:
+            return False
+        fallback = self.get_fallback_model()
+        if fallback is None or fallback.alias == model.alias:
+            return False
+        return self._has_model_credentials(fallback)
+
+    @model_validator(mode="after")
     def _check_api_key(self, info: ValidationInfo) -> VibeConfigSchema:
         if info.context is not None and not info.context.get("require_api_key", True):
             return self
         try:
-            provider = self.get_provider_for_model(self.get_active_model())
+            active_model = self.get_active_model()
+            provider = self.get_provider_for_model(active_model)
             api_key_env = provider.api_key_env_var
-            if api_key_env and not resolve_api_key(api_key_env):
+            if (
+                api_key_env
+                and not resolve_api_key(api_key_env)
+                and not self._fallback_covers_missing_credentials(active_model)
+            ):
                 raise MissingAPIKeyError(api_key_env, provider.name)
         except ValueError:
             pass
@@ -826,7 +861,16 @@ class VibeConfigSchema(ConfigSchema):
         }
         for provider in providers.values():
             api_key_env = provider.api_key_env_var
-            if api_key_env and not resolve_api_key(api_key_env):
+            role_model = next(
+                model
+                for model in autonomy_models
+                if self.get_provider_for_model(model).name == provider.name
+            )
+            if (
+                api_key_env
+                and not resolve_api_key(api_key_env)
+                and not self._fallback_covers_missing_credentials(role_model)
+            ):
                 raise MissingAPIKeyError(api_key_env, provider.name)
         return self
 

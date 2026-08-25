@@ -165,3 +165,34 @@ class TestBackendErrorIsInvalidModel:
         )
         msg = str(err)
         assert "Invalid model: mistral-large-turbo" in msg
+
+
+class TestBackendErrorIsFailoverEligible:
+    @pytest.mark.parametrize("status", [401, 402])
+    def test_auth_and_payment_errors(self, status: int) -> None:
+        err = _make_error(status=status, body_text="access unavailable")
+
+        assert err.is_failover_eligible
+
+    def test_generic_forbidden_error_is_not_eligible(self) -> None:
+        err = _make_error(status=403, body_text="model access forbidden")
+
+        assert not err.is_failover_eligible
+
+    def test_quota_forbidden_error_is_eligible(self) -> None:
+        err = _make_error(status=403, body_text="subscription exhausted")
+
+        assert err.is_failover_eligible
+
+    @pytest.mark.parametrize(
+        ("body", "eligible"),
+        [
+            ('{"detail":"insufficient_quota"}', True),
+            ('{"detail":"billing credits exhausted"}', True),
+            ('{"detail":"rate limit exceeded"}', False),
+        ],
+    )
+    def test_only_quota_rate_limits(self, body: str, eligible: bool) -> None:
+        err = _make_error(status=429, body_text=body)
+
+        assert err.is_failover_eligible is eligible

@@ -119,6 +119,7 @@ class ConfigScreen(ModalScreen[bool]):
         choices: dict[str, list[str]] = {
             "theme": list(sorted_theme_names()),
             "active_model": [model.alias for model in config.models],
+            "fallback_model": ["", *[model.alias for model in config.models]],
             "active_transcribe_model": list(config.transcribe_models),
             "active_tts_model": list(config.tts_models),
         }
@@ -134,6 +135,11 @@ class ConfigScreen(ModalScreen[bool]):
                 UNPINNED_ACTIVE_MODEL: (
                     f"default (currently {config.default_model_display_name})"
                 ),
+                **{model.alias: model.display_name for model in config.models},
+            }
+        elif view.name == "fallback_model":
+            update["value_labels"] = {
+                "": "off",
                 **{model.alias: model.display_name for model in config.models},
             }
         return view.model_copy(update=update)

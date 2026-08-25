@@ -646,6 +646,40 @@ class TestMistralRetry:
             assert result.message.content == "Some content"
             assert route.call_count == 2
 
+    @pytest.mark.asyncio
+    async def test_quota_exhaustion_skips_retry_when_fallback_is_available(self):
+        with respx.mock(base_url="https://api.mistral.ai") as mock_api:
+            route = mock_api.post("/v1/chat/completions").mock(
+                return_value=httpx.Response(
+                    status_code=429, json={"detail": "subscription exhausted"}
+                )
+            )
+            provider = ProviderConfig(
+                name="test_provider",
+                api_base="https://api.mistral.ai/v1",
+                api_key_env_var="API_KEY",
+            )
+            backend = MistralBackend(
+                provider=provider, fail_fast_on_quota_exhaustion=True
+            )
+            model = ModelConfig(
+                name="model_name", provider="test_provider", alias="model_alias"
+            )
+
+            with pytest.raises(BackendError) as caught:
+                await backend.complete(
+                    model=model,
+                    messages=[LLMMessage(role=Role.user, content="work")],
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
+
+            assert caught.value.is_failover_eligible
+            assert route.call_count == 1
+
 
 class TestMistralMapperPrepareMessage:
     """Tests for MistralMapper.prepare_message thinking-block handling.

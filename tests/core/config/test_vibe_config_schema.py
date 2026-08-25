@@ -7,6 +7,8 @@ from pydantic import ValidationError
 import pytest
 
 from vibe.core.config import (
+    DEFAULT_MODELS,
+    DEFAULT_PROVIDERS,
     AutonomyAggressiveness,
     AutonomyConfig,
     MissingAPIKeyError,
@@ -459,6 +461,54 @@ def test_check_api_key_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(keyring, "get_password", lambda service, username: None)
     with pytest.raises(MissingAPIKeyError):
         VibeConfigSchema()
+
+
+def test_fallback_model_resolves_configured_alias() -> None:
+    fallback = ModelConfig(name="user-model", provider="user", alias="user")
+    config = VibeConfigSchema.model_validate(
+        {
+            "models": [*DEFAULT_MODELS, fallback],
+            "providers": [
+                *DEFAULT_PROVIDERS,
+                ProviderConfig(name="user", api_base="https://user.example/v1"),
+            ],
+            "fallback_model": "user",
+        },
+        context={"require_api_key": False},
+    )
+
+    assert config.get_fallback_model() == fallback
+
+
+def test_fallback_model_rejects_unknown_alias() -> None:
+    with pytest.raises(ValidationError, match="Fallback model 'missing'"):
+        VibeConfigSchema.model_validate(
+            {"fallback_model": "missing"}, context={"require_api_key": False}
+        )
+
+
+def test_available_fallback_key_allows_missing_primary_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.setenv("USER_MODEL_API_KEY", "user-key")
+    monkeypatch.setattr(keyring, "get_password", lambda service, username: None)
+    fallback = ModelConfig(name="user-model", provider="user", alias="user")
+
+    config = VibeConfigSchema.model_validate({
+        "models": [*DEFAULT_MODELS, fallback],
+        "providers": [
+            *DEFAULT_PROVIDERS,
+            ProviderConfig(
+                name="user",
+                api_base="https://user.example/v1",
+                api_key_env_var="USER_MODEL_API_KEY",
+            ),
+        ],
+        "fallback_model": "user",
+    })
+
+    assert config.get_fallback_model() == fallback
 
 
 def test_autonomy_defaults() -> None:

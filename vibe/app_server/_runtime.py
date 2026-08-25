@@ -56,6 +56,7 @@ from vibe.core.experiments.manager import config_variants_from_response
 from vibe.core.experiments.models import EvalResponse
 from vibe.core.hooks.config import load_hooks_from_fs
 from vibe.core.hooks.models import HookConfigResult
+from vibe.core.llm.failover import ModelFailoverState
 from vibe.core.paths import WORKTREES_DIR
 from vibe.core.session import last_session_pointer
 from vibe.core.session.session_id import extract_suffix, generate_session_id
@@ -226,6 +227,7 @@ class _AgentLoopBlueprint:
             local_managed_shell_runtime_enabled=(
                 self.policy.local_managed_shell_runtime_enabled
             ),
+            model_failover_state=self.policy.model_failover_state,
             experiment_state=self.experiment_state,
             await_experiment_model=self.await_experiment_model,
             parent_session_id=self.parent_session_id,
@@ -290,6 +292,7 @@ class _RootRuntimeBlueprint:
             local_managed_shell_runtime_enabled=(
                 "terminal" not in self.client_capabilities.client_tools
             ),
+            model_failover_state=ModelFailoverState(),
         )
         cached = load_cached_eval_response(self.config)
         return _AgentLoopBlueprint(

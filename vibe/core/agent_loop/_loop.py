@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable, Generator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Generator, Sequence
 import contextlib
 import copy
 from dataclasses import dataclass, replace
@@ -57,6 +57,7 @@ from vibe.core.hooks.models import HookConfigResult, HookEvent
 from vibe.core.identity_cache import IdentityCache
 from vibe.core.llm.backend.factory import create_backend
 from vibe.core.llm.exceptions import BackendError, IncompleteStreamError
+from vibe.core.llm.failover import ModelFailoverState
 from vibe.core.llm.format import (
     APIToolFormatHandler,
     FailedToolCall,
@@ -148,6 +149,7 @@ from vibe.core.types import (
     ApprovalResponse,
     AssistantEvent,
     AvailableTool,
+    Backend,
     BaseEvent,
     ChildSessionLink,
     CompactEndEvent,
@@ -182,6 +184,7 @@ from vibe.core.utils import (
     TOOL_ERROR_TAG,
     VIBE_STOP_EVENT_TAG,
     CancellationReason,
+    RetryCategory,
     RetryObserver,
     RetryReason,
     get_user_cancellation_message,
@@ -256,6 +259,7 @@ class AgentRuntimePolicy:
     cache_store: CacheStore
     force_bypass_tool_permissions: bool
     local_managed_shell_runtime_enabled: bool
+    model_failover_state: ModelFailoverState
 
 
 class _SwappableConfigSource:
@@ -442,6 +446,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         max_tokens: int | None = None,
         max_session_tokens: int | None = None,
         backend: BackendLike | None = None,
+        model_failover_state: ModelFailoverState | None = None,
         enable_streaming: bool = False,
         launch_context: LaunchContext | None = None,
         is_subagent: bool = False,
@@ -547,6 +552,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self.format_handler = APIToolFormatHandler()
 
         self._injected_backend = backend
+        self._model_failover_state = model_failover_state or ModelFailoverState()
         self.backend = self.backend_factory()
         self._sampling_handler = self._create_sampling_handler(
             backend_getter=lambda: self.backend,
@@ -769,6 +775,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             cache_store=self.cache_store,
             force_bypass_tool_permissions=self.bypass_tool_permissions,
             local_managed_shell_runtime_enabled=self._local_managed_shell_runtime_enabled,
+            model_failover_state=self._model_failover_state,
         )
 
     async def record_child_session(
@@ -1146,6 +1153,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def _select_backend(self, config: VibeConfigSchema | None = None) -> BackendLike:
         config = config or self.config
         provider = config.get_active_provider()
+        return self._create_backend(provider, config)
+
+    def _create_backend(
+        self, provider: ProviderConfig, config: VibeConfigSchema | None = None
+    ) -> BackendLike:
+        config = config or self.config
+        fallback = config.get_fallback_model()
         return create_backend(
             provider=provider,
             on_retry=self.notice_retry,
@@ -1159,6 +1173,104 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 )
                 is not None
             ),
+            fail_fast_on_quota_exhaustion=(
+                fallback is not None and provider.name != fallback.provider
+            ),
+        )
+
+    def _backend_for_model(self, model: ModelConfig) -> BackendLike:
+        if self._injected_backend is not None:
+            return self._injected_backend
+        provider = self.config.get_provider_for_model(model)
+        return self._create_backend(provider)
+
+    @contextlib.asynccontextmanager
+    async def _backend_for_call(self, model: ModelConfig) -> AsyncIterator[BackendLike]:
+        active_model = self.config.get_active_model()
+        if self._injected_backend is not None or model.alias == active_model.alias:
+            yield self.backend
+            return
+
+        backend = self._backend_for_model(model)
+        try:
+            yield backend
+        finally:
+            with contextlib.suppress(Exception):
+                await backend.__aexit__(None, None, None)
+
+    def _available_fallback_for(self, preferred: ModelConfig) -> ModelConfig | None:
+        preferred_provider = self.config.get_provider_for_model(preferred)
+        if preferred_provider.backend is not Backend.MISTRAL:
+            return None
+        fallback = self.config.get_fallback_model()
+        if fallback is None or fallback.alias == preferred.alias:
+            return None
+        fallback_provider = self.config.get_provider_for_model(fallback)
+        if fallback_provider.api_key_env_var and not resolve_api_key(
+            fallback_provider.api_key_env_var
+        ):
+            return None
+        return fallback
+
+    def _failover_key(self, model: ModelConfig) -> str:
+        provider = self.config.get_provider_for_model(model)
+        return f"{provider.name}:{provider.api_key_env_var}"
+
+    async def _activate_model_fallback(
+        self, preferred: ModelConfig, *, reason: str
+    ) -> ModelConfig | None:
+        fallback = self._available_fallback_for(preferred)
+        if fallback is None:
+            return None
+        first_activation = await self._model_failover_state.activate(
+            self._failover_key(preferred)
+        )
+        self.stats.update_pricing(
+            fallback.input_price, fallback.output_price, fallback.cached_input_price
+        )
+        if first_activation:
+            logger.warning(
+                "Model fallback activated primary=%s fallback=%s reason=%s",
+                preferred.alias,
+                fallback.alias,
+                reason,
+            )
+            await self.notice_retry(
+                RetryReason(
+                    RetryCategory.MODEL_FALLBACK,
+                    f"model fallback {preferred.alias} -> {fallback.alias}: {reason}",
+                )
+            )
+        return fallback
+
+    async def _preflight_model(self, preferred: ModelConfig) -> ModelConfig:
+        fallback = self._available_fallback_for(preferred)
+        if fallback is None:
+            return preferred
+        provider = self.config.get_provider_for_model(preferred)
+        missing_key = bool(
+            provider.api_key_env_var and not resolve_api_key(provider.api_key_env_var)
+        )
+        if (
+            not self._model_failover_state.active(self._failover_key(preferred))
+            and not missing_key
+        ):
+            return preferred
+        return (
+            await self._activate_model_fallback(
+                preferred, reason="primary credentials unavailable"
+            )
+            or preferred
+        )
+
+    async def _fallback_after_error(
+        self, preferred: ModelConfig, error: Exception
+    ) -> ModelConfig | None:
+        backend_error = _extract_backend_error(error)
+        if backend_error is None or not backend_error.is_failover_eligible:
+            return None
+        return await self._activate_model_fallback(
+            preferred, reason=f"HTTP {backend_error.status or 'N/A'}"
         )
 
     async def _save_messages(self, *, allow_empty: bool = False) -> None:
@@ -2593,6 +2705,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         tools: list[AvailableTool] | None,
         tool_choice: StrToolChoice | AvailableTool | None,
         call_type: TelemetryCallType | None,
+        _allow_fallback: bool = True,
     ) -> LLMChunk:
         """Make one accounted, non-streaming model call.
 
@@ -2602,6 +2715,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         every non-streaming call (including compaction) goes through, so usage
         accounting can never be skipped.
         """
+        if _allow_fallback:
+            selected_model = await self._preflight_model(model)
+            if selected_model.alias != model.alias:
+                return await self._complete(
+                    model=selected_model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    call_type=call_type,
+                    _allow_fallback=False,
+                )
+
         provider = self.config.get_provider_for_model(model)
         backend_metadata = self._build_backend_metadata(call_type)
         backend_messages = self._messages_for_backend(messages, model)
@@ -2638,16 +2763,17 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 len(tools) if tools else 0,
                 model.thinking,
             )
-            result = await self.backend.complete(
-                model=model,
-                messages=backend_messages,
-                temperature=model.temperature,
-                tools=tools,
-                tool_choice=tool_choice,
-                extra_headers=self._get_extra_headers(provider),
-                max_tokens=self._max_tokens,
-                metadata=backend_metadata.model_dump(exclude_none=True),
-            )
+            async with self._backend_for_call(model) as backend:
+                result = await backend.complete(
+                    model=model,
+                    messages=backend_messages,
+                    temperature=model.temperature,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    extra_headers=self._get_extra_headers(provider),
+                    max_tokens=self._max_tokens,
+                    metadata=backend_metadata.model_dump(exclude_none=True),
+                )
             end_time = time.perf_counter()
 
             if result.usage is None:
@@ -2675,6 +2801,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             )
             if isinstance(e, RefusalError):
                 raise
+            if (
+                _allow_fallback
+                and (fallback := await self._fallback_after_error(model, e)) is not None
+            ):
+                return await self._complete(
+                    model=fallback,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    call_type=call_type,
+                    _allow_fallback=False,
+                )
             if _should_raise_rate_limit_error(e):
                 raise RateLimitError(provider.name, model.name) from e
             if _is_context_too_long_error(e):
@@ -2719,9 +2857,20 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
         return result
 
-    async def _chat_streaming(self) -> AsyncGenerator[LLMChunk]:
-        active_model = self.config.get_active_model()
-        provider = self.config.get_active_provider()
+    async def _chat_streaming(  # noqa: PLR0912, PLR0915
+        self, model_override: ModelConfig | None = None, *, _allow_fallback: bool = True
+    ) -> AsyncGenerator[LLMChunk]:
+        active_model = model_override or self.config.get_active_model()
+        if _allow_fallback:
+            selected_model = await self._preflight_model(active_model)
+            if selected_model.alias != active_model.alias:
+                async for chunk in self._chat_streaming(
+                    selected_model, _allow_fallback=False
+                ):
+                    yield chunk
+                return
+
+        provider = self.config.get_provider_for_model(active_model)
         backend_metadata = self._build_backend_metadata()
 
         available_tools = self.format_handler.get_available_tools(self.tool_manager)
@@ -2755,31 +2904,32 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 True,
             )
             usage = LLMUsage()
-            async for chunk in self.backend.complete_streaming(
-                model=active_model,
-                messages=backend_messages,
-                temperature=active_model.temperature,
-                tools=available_tools,
-                tool_choice=tool_choice,
-                extra_headers=self._get_extra_headers(),
-                max_tokens=self._max_tokens,
-                metadata=backend_metadata.model_dump(exclude_none=True),
-            ):
-                if chunk.correlation_id:
-                    self.telemetry_client.last_correlation_id = chunk.correlation_id
-                processed_message = self.format_handler.process_api_response_message(
-                    chunk.message
-                )
-                processed_chunk = LLMChunk(
-                    message=processed_message, usage=chunk.usage, stop=chunk.stop
-                )
-                chunk_agg = (
-                    processed_chunk
-                    if chunk_agg is None
-                    else chunk_agg + processed_chunk
-                )
-                usage += chunk.usage or LLMUsage()
-                yield processed_chunk
+            async with self._backend_for_call(active_model) as backend:
+                async for chunk in backend.complete_streaming(
+                    model=active_model,
+                    messages=backend_messages,
+                    temperature=active_model.temperature,
+                    tools=available_tools,
+                    tool_choice=tool_choice,
+                    extra_headers=self._get_extra_headers(provider),
+                    max_tokens=self._max_tokens,
+                    metadata=backend_metadata.model_dump(exclude_none=True),
+                ):
+                    if chunk.correlation_id:
+                        self.telemetry_client.last_correlation_id = chunk.correlation_id
+                    processed_message = (
+                        self.format_handler.process_api_response_message(chunk.message)
+                    )
+                    processed_chunk = LLMChunk(
+                        message=processed_message, usage=chunk.usage, stop=chunk.stop
+                    )
+                    chunk_agg = (
+                        processed_chunk
+                        if chunk_agg is None
+                        else chunk_agg + processed_chunk
+                    )
+                    usage += chunk.usage or LLMUsage()
+                    yield processed_chunk
             end_time = time.perf_counter()
 
             if chunk_agg is None or (
@@ -2813,6 +2963,17 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             )
             if isinstance(e, RefusalError):
                 raise
+            if (
+                _allow_fallback
+                and chunk_agg is None
+                and (fallback := await self._fallback_after_error(active_model, e))
+                is not None
+            ):
+                async for chunk in self._chat_streaming(
+                    fallback, _allow_fallback=False
+                ):
+                    yield chunk
+                return
             if isinstance(e, BackendError | IncompleteStreamError):
                 self._record_interrupted_assistant(chunk_agg)
             if isinstance(e, IncompleteStreamError):
@@ -2940,6 +3101,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             raise
         self.session_id = session_id
         self.parent_session_id = parent_session_id
+        if not self._is_subagent:
+            self._model_failover_state.reset()
         self.replace_session_lease(lease)
         await self.initialize_experiments()
         self.emit_new_session_telemetry()
@@ -3001,6 +3164,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self.stats = AgentStats.create_fresh(self.stats)
             self._apply_active_model_pricing()
         self._reset_session_scoped_state()
+        self._apply_active_model_pricing()
         cleanup_scratchpad(previous_scratchpad)
 
     def _cancel_experiments_task(self) -> None:
@@ -3055,6 +3219,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._current_user_message_id = None
         self._is_user_prompt_call = False
         self._reactive_recovery_used = False
+        if not self._is_subagent:
+            self._model_failover_state.reset()
 
     @requires_init
     async def clear_history(self) -> None:

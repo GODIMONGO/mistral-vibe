@@ -23,6 +23,7 @@ _SERVER_ERROR_STATUS_FLOOR = 500
 
 
 class RetryCategory(StrEnum):
+    MODEL_FALLBACK = auto()
     RATE_LIMITED = auto()
     SERVER_ERROR = auto()
     TIMED_OUT = auto()

@@ -123,6 +123,8 @@ class CallbackRecord:
 
 def _public_retry_category(category: RetryCategory) -> PublicRetryCategory:
     match category:
+        case RetryCategory.MODEL_FALLBACK:
+            return PublicRetryCategory.MODEL_FALLBACK
         case RetryCategory.RATE_LIMITED:
             return PublicRetryCategory.RATE_LIMITED
         case RetryCategory.SERVER_ERROR:

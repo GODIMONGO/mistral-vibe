@@ -163,6 +163,12 @@ class CommandRegistry:
                 handler="_show_subagents",
                 side_channel=True,
             ),
+            "tasks": Command(
+                aliases=frozenset(["/tasks"]),
+                description="Clear the persistent task status with /tasks clear",
+                handler="_tasks_command",
+                side_channel=True,
+            ),
             "whoami": Command(
                 aliases=frozenset(["/whoami"]),
                 description="Display the Mistral signed-in user, workspace, and plan",

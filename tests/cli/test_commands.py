@@ -216,6 +216,7 @@ class TestCommandRegistry:
         [
             ("/effort max", "effort", "_effort_command"),
             ("/subagents", "subagents", "_show_subagents"),
+            ("/tasks clear", "tasks", "_tasks_command"),
             ("/ultracode fix it", "ultracode", "_ultracode_command"),
             ("/pc open settings", "pc", "_pc_command"),
             ("/browser inspect tab", "browser", "_browser_command"),

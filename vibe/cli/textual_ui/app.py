@@ -201,7 +201,10 @@ from vibe.cli.textual_ui.widgets.question_app import QuestionApp
 from vibe.cli.textual_ui.widgets.rewind_app import RewindApp
 from vibe.cli.textual_ui.widgets.rewind_fork_message import RewindForkMessage
 from vibe.cli.textual_ui.widgets.session_picker import SessionPickerApp
-from vibe.cli.textual_ui.widgets.task_status_bar import TaskStatusBar
+from vibe.cli.textual_ui.widgets.task_status_bar import (
+    TaskStatusBar,
+    is_task_clear_request,
+)
 from vibe.cli.textual_ui.widgets.teleport_message import TeleportMessage
 from vibe.cli.textual_ui.widgets.theme_picker import ThemePickerApp, sorted_theme_names
 from vibe.cli.textual_ui.widgets.thinking_picker import ThinkingPickerApp
@@ -1111,7 +1114,7 @@ class VibeApp(App):  # noqa: PLR0904
             self._refresh_command_registry()
         self._refresh_banner()
         self._refresh_context_progress()
-        self._refresh_task_status()
+        await self._refresh_task_status()
         # Ready now unless a resume/continue/picker flow is pending — those mark
         # ready at their own return-to-input points to avoid dispatching against
         # a half-rebound session.
@@ -1418,6 +1421,9 @@ class VibeApp(App):  # noqa: PLR0904
         input_widget = self.query_one(ChatInputContainer)
 
         if not value and not self._input_queue.paused:
+            return
+        if is_task_clear_request(value):
+            await self._tasks_command(cmd_args="clear")
             return
 
         if self._banner:
@@ -2611,7 +2617,7 @@ class VibeApp(App):  # noqa: PLR0904
         if isinstance(
             event, SessionSnapshot | SessionCompacted | SessionContextCleared
         ):
-            self._refresh_task_status()
+            await self._refresh_task_status()
         entry = _public_entry(event)
         if isinstance(entry, PublicEffectEntry):
             self.query_one(TaskStatusBar).observe(entry)
@@ -3389,6 +3395,18 @@ class VibeApp(App):  # noqa: PLR0904
             UserCommandMessage(format_subagent_status(self.app_server.history))
         )
 
+    async def _tasks_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
+        if cmd_args.strip().casefold() != "clear":
+            await self._mount_and_scroll(
+                UserCommandMessage("Usage: `/tasks clear` to remove the task plan.")
+            )
+            return
+        cleared = await self.query_one(TaskStatusBar).dismiss_persisted(
+            self.app_server.session_id
+        )
+        message = "Task plan cleared." if cleared else "No task plan to clear."
+        await self._mount_and_scroll(UserCommandMessage(message))
+
     async def _show_whoami(self, **kwargs: Any) -> None:
         loading = LoadingWidget(status="Loading", show_hint=False)
         await self._loading_area.mount(loading)
@@ -3844,7 +3862,7 @@ class VibeApp(App):  # noqa: PLR0904
             self._chat_input_container.set_custom_border(None)
         self._refresh_profile_widgets()
         self._refresh_context_progress()
-        self._refresh_task_status()
+        await self._refresh_task_status()
         # Rebuild the transcript from the resumed session instead of trusting the
         # picker preview, which may have been skipped, may have failed, or may show
         # a different session than the one that was confirmed.
@@ -5176,8 +5194,10 @@ class VibeApp(App):  # noqa: PLR0904
             current_tokens=runtime.stats.context_tokens,
         )
 
-    def _refresh_task_status(self) -> None:
-        self.query_one(TaskStatusBar).restore(self.app_server.history)
+    async def _refresh_task_status(self) -> None:
+        await self.query_one(TaskStatusBar).restore_persisted(
+            self.app_server.session_id, self.app_server.history
+        )
 
     def _on_profile_changed(self) -> None:
         self._refresh_profile_widgets()

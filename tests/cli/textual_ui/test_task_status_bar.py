@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from vibe.app_server.events import HistoryEntryAdded
@@ -17,7 +19,12 @@ from vibe.app_server.models import (
     TodoEffectStatus,
 )
 from vibe.cli.textual_ui.app import VibeApp
-from vibe.cli.textual_ui.widgets.task_status_bar import TaskStatusBar
+from vibe.cli.textual_ui.widgets.chat_input import ChatInputContainer
+from vibe.cli.textual_ui.widgets.task_status_bar import (
+    TaskStatusBar,
+    is_task_clear_request,
+)
+from vibe.utils.cache_store import InMemoryCacheStore
 
 
 def _todo(content: str, status: TodoEffectStatus) -> TodoEffectItem:
@@ -108,6 +115,18 @@ def test_restore_uses_latest_todo_plan() -> None:
     assert widget.state.in_progress == ("Implement",)
 
 
+def test_restore_without_todo_plan_clears_previous_session_state() -> None:
+    widget = TaskStatusBar()
+    widget.observe(
+        _entry("previous", [_todo("Previous task", TodoEffectStatus.IN_PROGRESS)])
+    )
+
+    widget.restore([])
+
+    assert widget.state.total == 0
+    assert not widget.display
+
+
 def test_status_bar_bounds_long_task_lists_and_labels() -> None:
     widget = TaskStatusBar()
     entry = _entry(
@@ -127,6 +146,32 @@ def test_status_bar_bounds_long_task_lists_and_labels() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dismissed_plan_stays_hidden_after_restore() -> None:
+    store = InMemoryCacheStore()
+    entry = _entry("persisted-plan", [_todo("Old task", TodoEffectStatus.IN_PROGRESS)])
+    widget = TaskStatusBar()
+    widget.observe(entry)
+
+    assert await widget.dismiss_persisted("session", cache_store=store)
+
+    restored = TaskStatusBar()
+    await restored.restore_persisted("session", [entry], cache_store=store)
+    assert restored.state.total == 0
+    assert not restored.display
+
+    new_entry = _entry("new-plan", [_todo("New task", TodoEffectStatus.IN_PROGRESS)])
+    assert restored.observe(new_entry)
+    assert restored.state.in_progress == ("New task",)
+
+
+@pytest.mark.parametrize(
+    "text", ["убери все задачи", "Удали задачи!", "clear all tasks", " remove tasks "]
+)
+def test_natural_task_clear_requests_are_recognized(text: str) -> None:
+    assert is_task_clear_request(text)
+
+
+@pytest.mark.asyncio
 async def test_app_updates_task_status_bar_from_live_todo_event(
     vibe_app: VibeApp,
 ) -> None:
@@ -140,3 +185,22 @@ async def test_app_updates_task_status_bar_from_live_todo_event(
         widget = vibe_app.query_one(TaskStatusBar)
         assert widget.display
         assert widget.state.in_progress == ("Live implementation",)
+
+
+@pytest.mark.asyncio
+async def test_natural_clear_request_is_handled_without_model_turn(
+    vibe_app: VibeApp,
+) -> None:
+    async with vibe_app.run_test():
+        widget = vibe_app.query_one(TaskStatusBar)
+        widget.dismiss_persisted = AsyncMock(return_value=True)
+        vibe_app._handle_user_message = AsyncMock()
+
+        await vibe_app.on_chat_input_container_submitted(
+            ChatInputContainer.Submitted("убери все задачи")
+        )
+
+        widget.dismiss_persisted.assert_awaited_once_with(
+            vibe_app.app_server.session_id
+        )
+        vibe_app._handle_user_message.assert_not_awaited()

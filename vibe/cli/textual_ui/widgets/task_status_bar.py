@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,9 +18,25 @@ from vibe.app_server.models import (
     TodoEffectOutput,
     TodoEffectStatus,
 )
+from vibe.utils.cache_store import CacheStore, FileSystemCacheStore
 
 _MAX_VISIBLE_TASKS = 3
 _MAX_TASK_LABEL_CHARS = 64
+_MAX_DISMISSED_PLANS = 100
+_CACHE_SECTION = "task_status"
+_DISMISSED_PLANS_KEY = "dismissed_plans"
+_CLEAR_TASK_REQUESTS = frozenset({
+    "clear all tasks",
+    "clear tasks",
+    "remove all tasks",
+    "remove tasks",
+    "очисти все задачи",
+    "очисти задачи",
+    "убери все задачи",
+    "убери задачи",
+    "удали все задачи",
+    "удали задачи",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,23 +99,78 @@ def _todos_from_entry(entry: PublicEffectEntry) -> list[TodoEffectItem] | None:
         return todos
 
 
+def is_task_clear_request(value: str) -> bool:
+    normalized = " ".join(value.casefold().strip(" .!?\t\r\n").split())
+    return normalized in _CLEAR_TASK_REQUESTS
+
+
+def _dismissed_plans(data: dict[str, Any]) -> dict[str, str]:
+    value = data.get(_DISMISSED_PLANS_KEY)
+    if not isinstance(value, dict):
+        return {}
+    return {
+        session_id: entry_id
+        for session_id, entry_id in value.items()
+        if isinstance(session_id, str) and isinstance(entry_id, str)
+    }
+
+
 class TaskStatusBar(Static):
     state = reactive(TaskStatusState())
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__("", **kwargs)
         self.display = False
+        self._latest_entry_id: str | None = None
+        self._dismissed_entry_id: str | None = None
+
+    async def restore_persisted(
+        self,
+        session_id: str,
+        history: list[PublicHistoryEntry],
+        *,
+        cache_store: CacheStore | None = None,
+    ) -> None:
+        store = cache_store or FileSystemCacheStore()
+        data = await asyncio.to_thread(store.read_section, _CACHE_SECTION)
+        self._dismissed_entry_id = _dismissed_plans(data).get(session_id)
+        self.restore(history)
+
+    async def dismiss_persisted(
+        self, session_id: str, *, cache_store: CacheStore | None = None
+    ) -> bool:
+        had_tasks = self.state.total > 0
+        self.state = TaskStatusState()
+        self._dismissed_entry_id = self._latest_entry_id
+        if self._latest_entry_id is None:
+            return had_tasks
+        store = cache_store or FileSystemCacheStore()
+        data = await asyncio.to_thread(store.read_section, _CACHE_SECTION)
+        dismissed = _dismissed_plans(data)
+        dismissed[session_id] = self._latest_entry_id
+        dismissed = dict(list(dismissed.items())[-_MAX_DISMISSED_PLANS:])
+        await asyncio.to_thread(
+            store.write_section, _CACHE_SECTION, {_DISMISSED_PLANS_KEY: dismissed}
+        )
+        return had_tasks
 
     def restore(self, history: list[PublicHistoryEntry]) -> None:
+        self._latest_entry_id = None
         for entry in reversed(history):
             if isinstance(entry, PublicEffectEntry) and self.observe(entry):
                 return
+        self.state = TaskStatusState()
         self.state = TaskStatusState()
 
     def observe(self, entry: PublicEffectEntry) -> bool:
         todos = _todos_from_entry(entry)
         if todos is None:
             return False
+        self._latest_entry_id = entry.id
+        if entry.id == self._dismissed_entry_id:
+            self.state = TaskStatusState()
+            return True
+        self._dismissed_entry_id = None
         self.state = _state_from_todos(todos)
         return True
 
@@ -129,4 +201,4 @@ class TaskStatusBar(Static):
         return Content("\n").join(lines)
 
 
-__all__ = ["TaskStatusBar", "TaskStatusState"]
+__all__ = ["TaskStatusBar", "TaskStatusState", "is_task_clear_request"]

@@ -217,6 +217,9 @@ compaction and lower repeated-input usage.
 The Textual UI keeps a persistent task status bar above the input while a todo
 plan exists. It shows the current, completed, waiting, and cancelled tasks,
 updates from live todo events, and restores the latest plan after resume.
+`/tasks clear` (or the plain request `убери все задачи`) dismisses the current
+plan locally without an LLM call and remembers that dismissal for the session
+until a new todo plan is created.
 
 On Windows, `computer_use` provides bounded structured observation, one
 overwriting PNG screenshot in the session scratchpad, focus, click, Unicode typing,

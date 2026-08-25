@@ -231,6 +231,9 @@ panel with UltraCode selected.
 While a todo plan exists, a persistent task status bar above the input shows
 the active task, completed tasks, waiting tasks, and cancelled tasks. It updates
 from live todo events and restores the latest plan when a session is resumed.
+Run `/tasks clear` or type `убери все задачи` to dismiss the current plan without
+calling the model; the dismissal persists for that session until a new todo plan
+is created.
 
 `low` minimizes concurrency and review retries; `max` uses the configured limits
 and refreshes compact context most often. Subagent output and the number of live

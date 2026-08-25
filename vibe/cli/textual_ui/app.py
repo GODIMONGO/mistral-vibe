@@ -4201,7 +4201,7 @@ class VibeApp(App):  # noqa: PLR0904
     async def _handle_telegram_message(self, message: TelegramIncomingMessage) -> str:
         text = message.text.strip()
         command = text.split(None, 1)[0].lower() if text else ""
-        if command in {"/exit", "/logaut", "/logout", "/telegram", "/tg"}:
+        if command in {"/exit", "/logout", "/telegram", "/tg"}:
             return "This lifecycle command is available only in the local Vibe UI."
         if response := self._telegram_builtin_response(command):
             return response

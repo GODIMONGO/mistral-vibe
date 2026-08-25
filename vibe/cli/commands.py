@@ -144,7 +144,7 @@ class CommandRegistry:
                 side_channel=True,
             ),
             "logout": Command(
-                aliases=frozenset(["/logout", "/logaut"]),
+                aliases=frozenset(["/logout"]),
                 description=(
                     "Sign out of the Mistral account and exit; the next launch "
                     "starts browser sign-in"

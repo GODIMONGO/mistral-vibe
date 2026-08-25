@@ -40,11 +40,11 @@ async def test_exit_synonym_runs_exit_handler_and_is_not_sent_as_prompt(
         assert prompts == []
 
 
-@pytest.mark.parametrize("alias", ["/logout", "/logaut"])
 @pytest.mark.asyncio
 async def test_logout_alias_removes_account_then_exits(
-    alias: str, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    alias = "/logout"
     from vibe.setup import auth
     from vibe.setup.onboarding.context import OnboardingContext
 

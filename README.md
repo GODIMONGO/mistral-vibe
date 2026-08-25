@@ -519,10 +519,10 @@ turn is running, the command waits in the main input queue.
 
 Additional autonomous commands include `/subagents`, `/effort
 off|low|medium|high|max`, `/ultracode <objective>`, `/pc`, `/browser`, `/web`, and
-`/memory`. `/chats` opens the local session picker. `/logaut` and `/logout` are
-account sign-out aliases: they remove the saved Mistral credential and exit so
-the next launch starts browser sign-in. `/exit` only closes the application. The
-built-in `/web-engineering` skill adds primary-source research,
+`/memory`. `/chats` opens the local session picker. `/logout` removes the saved
+Mistral credential and exits so the next launch starts browser sign-in. `/exit`
+only closes the application. The built-in `/web-engineering` skill adds
+primary-source research,
 security, accessibility, performance, and real-browser verification.
 
 ### Custom Slash Commands via Skills

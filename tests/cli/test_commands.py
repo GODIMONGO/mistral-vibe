@@ -263,14 +263,16 @@ class TestCommandRegistry:
 
     def test_logout_command_signs_out_instead_of_exiting_directly(self) -> None:
         registry = CommandRegistry()
-        for alias in ["/logout", "/logaut"]:
-            result = registry.parse_command(alias)
-            assert result is not None, alias
-            cmd_name, cmd, _ = result
-            assert cmd_name == "logout"
-            assert cmd.handler == "_logout_account"
-            assert cmd.exits is True
-            assert cmd.side_channel is False
+        result = registry.parse_command("/logout")
+        assert result is not None
+        cmd_name, cmd, _ = result
+        assert cmd_name == "logout"
+        assert cmd.handler == "_logout_account"
+        assert cmd.exits is True
+        assert cmd.side_channel is False
+
+    def test_removed_logaut_alias_is_not_registered(self) -> None:
+        assert CommandRegistry().parse_command("/logaut") is None
 
     def test_bare_exit_synonym_with_trailing_text_is_not_a_command(self) -> None:
         registry = CommandRegistry()

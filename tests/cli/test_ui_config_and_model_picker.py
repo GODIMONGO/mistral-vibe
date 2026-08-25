@@ -387,7 +387,7 @@ async def test_effort_command_persists_model_and_subagent_intensity() -> None:
             await app._effort_command("max")
             await pilot.pause(0.2)
 
-        set_effort.assert_awaited_once_with("max", 4)
+        set_effort.assert_awaited_once_with("max", 4, "high", "medium")
 
 
 @pytest.mark.asyncio
@@ -398,10 +398,10 @@ async def test_effort_command_accepts_independent_direct_values() -> None:
         with patch.object(
             app.app_server.resources.config, "set_effort", new=AsyncMock()
         ) as set_effort:
-            await app._effort_command("low 12")
+            await app._effort_command("low 12 max high")
             await pilot.pause(0.2)
 
-        set_effort.assert_awaited_once_with("low", 12)
+        set_effort.assert_awaited_once_with("low", 12, "max", "high")
 
 
 @pytest.mark.asyncio
@@ -420,6 +420,12 @@ async def test_effort_command_opens_slider_picker() -> None:
         )
         assert "4/16" in str(
             picker.query_one("#effortpicker-subagents", Static).render()
+        )
+        assert "Accuracy" in str(
+            picker.query_one("#effortpicker-accuracy", Static).render()
+        )
+        assert "Web search" in str(
+            picker.query_one("#effortpicker-web-search", Static).render()
         )
         assert "UltraCode" in str(
             picker.query_one("#effortpicker-ultracode", Static).render()
@@ -456,7 +462,25 @@ async def test_effort_picker_applies_independent_minimums() -> None:
             await pilot.press("enter")
             await pilot.pause(0.2)
 
-        set_effort.assert_awaited_once_with("off", 0)
+        set_effort.assert_awaited_once_with("off", 0, "high", "medium")
+
+
+@pytest.mark.asyncio
+async def test_effort_picker_adjusts_accuracy_and_web_search_independently() -> None:
+    app = build_test_vibe_app(config=_make_config_with_models())
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        await app._effort_command()
+        await pilot.pause(0.2)
+        await pilot.press("down", "down", "right", "down", "right")
+        with patch.object(
+            app.app_server.resources.config, "set_effort", new=AsyncMock()
+        ) as set_effort:
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+
+        set_effort.assert_awaited_once_with("off", 4, "max", "high")
 
 
 @pytest.mark.asyncio
@@ -473,7 +497,7 @@ async def test_effort_picker_ultracode_sets_everything_to_maximum() -> None:
             await pilot.press("u")
             await pilot.pause(0.2)
 
-        set_effort.assert_awaited_once_with("max", 16)
+        set_effort.assert_awaited_once_with("max", 16, "max", "max")
 
 
 @pytest.mark.asyncio

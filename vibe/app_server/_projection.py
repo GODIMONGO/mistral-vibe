@@ -154,6 +154,7 @@ def project_config_view(
             goal_advisor_model=config.autonomy.goal_advisor_model,
             reviewer_model=config.autonomy.reviewer_model,
             max_parallel_subagents=config.autonomy.max_parallel_subagents,
+            web_search_activity=config.autonomy.web_search_activity,
         ),
     )
 
@@ -174,6 +175,7 @@ def _project_model_config(model: ModelConfig) -> ModelConfigView:
         name=model.name,
         alias=model.alias,
         thinking=model.thinking,
+        temperature=model.temperature,
         supports_images=model.supports_images,
         display_name=model.display_name or model.alias,
     )

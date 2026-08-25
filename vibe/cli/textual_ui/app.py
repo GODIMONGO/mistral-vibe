@@ -33,11 +33,16 @@ from textual.worker import Worker, WorkerFailed, WorkerState
 from vibe import __version__ as CORE_VERSION
 from vibe.app_server import AppServerHost, AppServerSession, SessionExitSummary
 from vibe.app_server.config import (
+    ACCURACY_LEVELS,
+    ACCURACY_TEMPERATURES,
     MAX_PARALLEL_SUBAGENTS,
     THINKING_LEVELS,
+    WEB_SEARCH_ACTIVITY_LEVELS,
+    AccuracyLevel,
     ConfigView,
     ModelConfigView,
     ThinkingLevel,
+    WebSearchActivity,
 )
 from vibe.app_server.events import (
     AppServerEvent,
@@ -375,7 +380,10 @@ class BottomApp(StrEnum):
 # Smooth per-notch wheel scroll duration. Kept short so consecutive notches chain
 # into continuous motion at the same average speed as an instant jump.
 WHEEL_SCROLL_DURATION = 0.1
-_EFFORT_MAX_ARGS = 2
+_EFFORT_MAX_ARGS = 4
+_EFFORT_SUBAGENT_ARGS = 2
+_EFFORT_ACCURACY_ARGS = 3
+_EFFORT_WEB_SEARCH_ARGS = 4
 
 
 class ChatScroll(VerticalScroll):
@@ -2012,18 +2020,26 @@ class VibeApp(App):  # noqa: PLR0904
         self,
         level: ThinkingLevel,
         max_parallel_subagents: int,
+        accuracy: AccuracyLevel,
+        web_search_activity: WebSearchActivity,
         *,
         ultracode: bool = False,
         announce: bool = True,
     ) -> None:
-        await self.app_server.resources.config.set_effort(level, max_parallel_subagents)
+        await self.app_server.resources.config.set_effort(
+            level, max_parallel_subagents, accuracy, web_search_activity
+        )
         if announce:
             mode = "UltraCode" if ultracode else "Effort"
             await self._mount_and_scroll(
                 UserCommandMessage(
                     f"{mode} applied: thinking **{level}**, subagents "
-                    f"**{max_parallel_subagents}/{MAX_PARALLEL_SUBAGENTS}**. "
-                    "Main, advisor, and reviewer thinking were updated together."
+                    f"**{max_parallel_subagents}/{MAX_PARALLEL_SUBAGENTS}**, "
+                    f"accuracy **{accuracy}** (temperature "
+                    f"**{ACCURACY_TEMPERATURES[accuracy]}**), web search "
+                    f"**{web_search_activity}**. "
+                    "Main, advisor, and reviewer thinking and accuracy were updated "
+                    "together."
                 )
             )
 
@@ -2044,6 +2060,8 @@ class VibeApp(App):  # noqa: PLR0904
                 self._persist_effort,
                 message.thinking,
                 message.max_parallel_subagents,
+                message.accuracy,
+                message.web_search_activity,
                 ultracode=message.ultracode,
             ),
         )
@@ -3583,6 +3601,8 @@ class VibeApp(App):  # noqa: PLR0904
                     self._persist_effort,
                     cast(ThinkingLevel, "max"),
                     MAX_PARALLEL_SUBAGENTS,
+                    cast(AccuracyLevel, "max"),
+                    cast(WebSearchActivity, "max"),
                     ultracode=True,
                 ),
             )
@@ -3590,14 +3610,16 @@ class VibeApp(App):  # noqa: PLR0904
         if len(parts) > _EFFORT_MAX_ARGS or parts[0] not in THINKING_LEVELS:
             await self._mount_and_scroll(
                 ErrorMessage(
-                    "Usage: /effort [off|low|medium|high|max] [0-16]",
+                    "Usage: /effort [thinking] [0-16] "
+                    "[accuracy: low|medium|high|max] "
+                    "[web: off|low|medium|high|max]",
                     collapsed=self._tools_collapsed,
                 )
             )
             return
         level = cast(ThinkingLevel, parts[0])
         max_parallel_subagents = self.config.autonomy.max_parallel_subagents
-        if len(parts) == _EFFORT_MAX_ARGS:
+        if len(parts) >= _EFFORT_SUBAGENT_ARGS:
             try:
                 max_parallel_subagents = int(parts[1])
             except ValueError:
@@ -3610,10 +3632,41 @@ class VibeApp(App):  # noqa: PLR0904
                 )
             )
             return
+        accuracy = min(
+            ACCURACY_LEVELS,
+            key=lambda value: abs(
+                ACCURACY_TEMPERATURES[value] - self.config.active_model.temperature
+            ),
+        )
+        if len(parts) >= _EFFORT_ACCURACY_ARGS:
+            if parts[2] not in ACCURACY_LEVELS:
+                await self._mount_and_scroll(
+                    ErrorMessage(
+                        "Accuracy must be low, medium, high, or max.",
+                        collapsed=self._tools_collapsed,
+                    )
+                )
+                return
+            accuracy = cast(AccuracyLevel, parts[2])
+        web_search_activity = self.config.autonomy.web_search_activity
+        if len(parts) >= _EFFORT_WEB_SEARCH_ARGS:
+            if parts[3] not in WEB_SEARCH_ACTIVITY_LEVELS:
+                await self._mount_and_scroll(
+                    ErrorMessage(
+                        "Web search activity must be off, low, medium, high, or max.",
+                        collapsed=self._tools_collapsed,
+                    )
+                )
+                return
+            web_search_activity = cast(WebSearchActivity, parts[3])
         await self._queue.enqueue_command(
-            f"effort {level} {max_parallel_subagents}",
+            f"effort {level} {max_parallel_subagents} {accuracy} {web_search_activity}",
             command_payload=partial(
-                self._persist_effort, level, max_parallel_subagents
+                self._persist_effort,
+                level,
+                max_parallel_subagents,
+                accuracy,
+                web_search_activity,
             ),
         )
 
@@ -4158,6 +4211,8 @@ class VibeApp(App):  # noqa: PLR0904
         await self._persist_effort(
             cast(ThinkingLevel, "max"),
             MAX_PARALLEL_SUBAGENTS,
+            cast(AccuracyLevel, "max"),
+            cast(WebSearchActivity, "max"),
             ultracode=True,
             announce=False,
         )
@@ -4546,7 +4601,9 @@ class VibeApp(App):  # noqa: PLR0904
                 current_max_parallel_subagents=(
                     self.config.autonomy.max_parallel_subagents
                 ),
-                initial_row=2 if ultracode else 0,
+                current_temperature=self.config.active_model.temperature,
+                current_web_search_activity=(self.config.autonomy.web_search_activity),
+                initial_row=4 if ultracode else 0,
             )
         )
 

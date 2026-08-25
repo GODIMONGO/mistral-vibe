@@ -48,19 +48,25 @@ async def test_effort_updates_thinking_and_independent_subagent_limit(
 ) -> None:
     config = backend_contract_session.resources.config
 
-    await config.set_effort("off", 0)
+    await config.set_effort("off", 0, "low", "off")
 
     assert config.current.active_model.thinking == "off"
     assert config.current.autonomy.max_parallel_subagents == 0
     assert config.current.autonomy.aggressiveness == "low"
     assert config.current.autonomy.enabled is False
+    assert config.current.active_model.temperature == 1.0
+    assert config.current.autonomy.web_search_activity == "off"
+    assert not backend_contract_session.resources.runtime.has_tool("web_search")
 
-    await config.set_effort("max", 16)
+    await config.set_effort("max", 16, "max", "max")
 
     assert config.current.active_model.thinking == "max"
     assert config.current.autonomy.max_parallel_subagents == 16
     assert config.current.autonomy.aggressiveness == "max"
     assert config.current.autonomy.enabled is True
+    assert config.current.active_model.temperature == 0.0
+    assert config.current.autonomy.web_search_activity == "max"
+    assert backend_contract_session.resources.runtime.has_tool("web_search")
 
 
 @pytest.mark.asyncio

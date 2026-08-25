@@ -5,11 +5,14 @@ from collections.abc import Callable, Mapping
 from vibe.app_server._model import validate_wire
 from vibe.app_server.client_state import ClientSessionState
 from vibe.app_server.config import (
+    ACCURACY_TEMPERATURES,
     MAX_PARALLEL_SUBAGENTS,
     MIN_PARALLEL_SUBAGENTS,
+    AccuracyLevel,
     ConfigView,
     ProxySettingsView,
     ThinkingLevel,
+    WebSearchActivity,
 )
 from vibe.app_server.connection import AppServerResourceConnection
 from vibe.app_server.models import (
@@ -199,7 +202,11 @@ class ConfigResource:
             )
 
     async def set_effort(
-        self, level: ThinkingLevel, max_parallel_subagents: int
+        self,
+        level: ThinkingLevel,
+        max_parallel_subagents: int,
+        accuracy: AccuracyLevel,
+        web_search_activity: WebSearchActivity,
     ) -> None:
         if (
             not MIN_PARALLEL_SUBAGENTS
@@ -223,6 +230,14 @@ class ConfigResource:
             )
             for alias in sorted(aliases - {""})
         ]
+        ops.extend(
+            ConfigWriteOpWire(
+                op="set",
+                path=f"/models/{_escape_json_pointer_token(alias)}/temperature",
+                value=ACCURACY_TEMPERATURES[accuracy],
+            )
+            for alias in sorted(aliases - {""})
+        )
         if max_parallel_subagents <= 1:
             aggressiveness = "low"
         elif max_parallel_subagents <= _MEDIUM_SUBAGENT_CEILING:
@@ -247,6 +262,11 @@ class ConfigResource:
             ),
             ConfigWriteOpWire(
                 op="set", path="/autonomy/enabled", value=max_parallel_subagents > 0
+            ),
+            ConfigWriteOpWire(
+                op="set",
+                path="/autonomy/web_search_activity",
+                value=web_search_activity,
             ),
         ])
         response = await self.write(

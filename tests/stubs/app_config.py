@@ -23,6 +23,7 @@ def build_test_app_config(
             name="test-model",
             alias="test-model",
             thinking="off",
+            temperature=0.2,
             supports_images=False,
             display_name="test-model",
         ),
@@ -46,6 +47,7 @@ def build_test_app_config(
                 name="test-model",
                 alias="test-model",
                 thinking="off",
+                temperature=0.2,
                 supports_images=False,
                 display_name="test-model",
             )
@@ -83,5 +85,6 @@ def build_test_app_config(
             goal_advisor_model="",
             reviewer_model="",
             max_parallel_subagents=4,
+            web_search_activity="medium",
         ),
     )

@@ -214,6 +214,13 @@ verdict, and reviewer evidence is deduplicated. Lower a model's
 `auto_compact_threshold` below the 200000 default for earlier history
 compaction and lower repeated-input usage.
 
+`/effort` independently controls thinking, the 0-16 subagent limit, answer
+accuracy, and web-search activity. Accuracy levels `low|medium|high|max` map to
+temperatures `1.0|0.7|0.2|0.0`. Web activity `off|low|medium|high|max` disables
+search at `off` and progressively increases proactive online verification.
+The direct form is `/effort THINKING SUBAGENTS ACCURACY WEB`; UltraCode sets all
+four controls to `max`.
+
 The Textual UI keeps a persistent task status bar above the input while a todo
 plan exists. It shows the current, completed, waiting, and cancelled tasks,
 updates from live todo events, and restores the latest plan after resume.

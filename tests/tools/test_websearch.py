@@ -362,6 +362,12 @@ def test_is_available_without_key(monkeypatch):
     assert WebSearch.is_available() is True
 
 
+def test_is_unavailable_when_web_search_activity_is_off() -> None:
+    config = build_test_vibe_config(autonomy={"web_search_activity": "off"})
+
+    assert WebSearch.is_available(config) is False
+
+
 def test_is_available_uses_mistral_provider_api_key_env_var(monkeypatch):
     monkeypatch.setenv("MISTRAL_API_KEY", "fallback-key")
     monkeypatch.setenv("TEST_API_KEY", "provider-key")

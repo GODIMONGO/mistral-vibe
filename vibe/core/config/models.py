@@ -27,6 +27,7 @@ from vibe.config_values import (
     SpeechOutputFormat,
     ThinkingLevel,
     TranscriptionEncoding,
+    WebSearchActivity,
 )
 from vibe.core.config._defaults import (
     DEFAULT_AUTO_COMPACT_THRESHOLD,
@@ -80,6 +81,13 @@ class AutonomyConfig(BaseModel):
     max_review_retries: int = Field(default=3, ge=1, le=10)
     max_parallel_subagents: int = Field(
         default=4, ge=MIN_PARALLEL_SUBAGENTS, le=MAX_PARALLEL_SUBAGENTS
+    )
+    web_search_activity: WebSearchActivity = Field(
+        default="medium",
+        description=(
+            "How proactively agents use web search: off disables the tool; higher "
+            "levels increase online verification."
+        ),
     )
     max_live_child_runtimes: int = Field(default=8, ge=1, le=64)
     max_subagent_result_chars: int = Field(default=8192, ge=1024)

@@ -146,7 +146,7 @@ class WebSearch(
 
     @classmethod
     def is_available(cls, config: VibeConfigSchema | None = None) -> bool:
-        return True
+        return config is None or config.autonomy.web_search_activity != "off"
 
     @final
     async def run(

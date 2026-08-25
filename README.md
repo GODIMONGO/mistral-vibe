@@ -221,12 +221,16 @@ results. New models auto-compact at 200,000 context tokens by default; lower
 `auto_compact_threshold` per model when optimizing a long-running session for
 minimum repeated input.
 
-Run `/effort` to open the compact slider panel. Thinking (`off` through `max`)
-and the `0–16` subagent limit are independent. The UltraCode row applies maximum
-thinking to the main model, advisor, and reviewer, enables autonomous mode, and
-sets the subagent limit to 16. `/ultracode <objective>` applies that preset before
-running a difficult objective; `/ultracode` without an objective opens the same
-panel with UltraCode selected.
+Run `/effort` to open the compact slider panel. Thinking (`off` through `max`),
+the `0–16` subagent limit, answer accuracy, and web-search activity are independent.
+Accuracy maps `low|medium|high|max` to model temperatures `1.0|0.7|0.2|0.0`;
+higher accuracy means less sampling randomness. Web activity supports
+`off|low|medium|high|max`: `off` removes the tool, while higher levels make the
+agent increasingly proactive about online verification. The direct form is
+`/effort THINKING SUBAGENTS ACCURACY WEB`. The UltraCode row applies `max` to all
+four controls. `/ultracode <objective>` applies that preset before running a
+difficult objective; `/ultracode` without an objective opens the same panel with
+UltraCode selected.
 
 While a todo plan exists, a persistent task status bar above the input shows
 the active task, completed tasks, waiting tasks, and cancelled tasks. It updates
@@ -344,6 +348,9 @@ permission = "ask"
 engine = "auto" # auto | mistral | public
 timeout = 30
 max_results = 5 # 1-10
+
+[autonomy]
+web_search_activity = "medium" # off | low | medium | high | max
 ```
 
 Use `engine = "public"` for OAuth-only/no-key operation without spending hosted

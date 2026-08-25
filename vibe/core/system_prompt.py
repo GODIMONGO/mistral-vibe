@@ -361,6 +361,40 @@ def _get_tool_aware_os_system_prompt(tool_manager: ToolManager | None) -> str:
     )
 
 
+def _get_web_search_policy(config: VibeConfigSchema) -> str:
+    match config.autonomy.web_search_activity:
+        case "off":
+            instruction = "Web search is disabled. Do not claim that you searched."
+        case "low":
+            instruction = (
+                "Use web_search only when the user explicitly asks for online search."
+            )
+        case "medium":
+            instruction = (
+                "Use web_search for time-sensitive facts, current documentation, and "
+                "claims that cannot be verified locally."
+            )
+        case "high":
+            instruction = (
+                "Proactively use web_search whenever external or current information "
+                "could materially improve the answer."
+            )
+        case "max":
+            instruction = (
+                "Aggressively use web_search to verify relevant factual claims, compare "
+                "multiple sources when useful, and cite the evidence in the answer."
+            )
+    return "## Web search activity\n\n" + instruction
+
+
+def _get_available_web_search_policy(
+    config: VibeConfigSchema, tool_manager: ToolManager | None
+) -> str:
+    if tool_manager is not None and "web_search" not in tool_manager.available_tools:
+        return ""
+    return _get_web_search_policy(config)
+
+
 def get_universal_system_prompt(
     config: VibeConfigSchema,
     skill_manager: SkillManager,
@@ -389,6 +423,10 @@ def get_universal_system_prompt(
 
     if config.include_model_info:
         sections.append(f"Your model name is: `{config.get_active_model().alias}`")
+
+    sections.extend(
+        filter(None, [_get_available_web_search_policy(config, tool_manager)])
+    )
 
     if config.include_prompt_detail:
         sections.append(_get_tool_aware_os_system_prompt(tool_manager))

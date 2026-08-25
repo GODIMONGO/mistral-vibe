@@ -10,6 +10,22 @@ DEFAULT_LOG_LEVEL = "WARNING"
 type AudioClient = Literal["mistral"]
 type ThinkingLevel = Literal["off", "low", "medium", "high", "max"]
 THINKING_LEVELS: tuple[ThinkingLevel, ...] = ("off", "low", "medium", "high", "max")
+type AccuracyLevel = Literal["low", "medium", "high", "max"]
+ACCURACY_LEVELS: tuple[AccuracyLevel, ...] = ("low", "medium", "high", "max")
+ACCURACY_TEMPERATURES: dict[AccuracyLevel, float] = {
+    "low": 1.0,
+    "medium": 0.7,
+    "high": 0.2,
+    "max": 0.0,
+}
+type WebSearchActivity = Literal["off", "low", "medium", "high", "max"]
+WEB_SEARCH_ACTIVITY_LEVELS: tuple[WebSearchActivity, ...] = (
+    "off",
+    "low",
+    "medium",
+    "high",
+    "max",
+)
 MIN_PARALLEL_SUBAGENTS = 0
 MAX_PARALLEL_SUBAGENTS = 16
 

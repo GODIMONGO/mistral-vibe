@@ -6,8 +6,30 @@ import subprocess
 
 import pytest
 
-from vibe.core.config import ProjectContextConfig
-from vibe.core.system_prompt import ProjectContextProvider
+from tests.conftest import build_test_vibe_config
+from vibe.config_values import WebSearchActivity
+from vibe.core.config import AutonomyConfig, ProjectContextConfig
+from vibe.core.system_prompt import ProjectContextProvider, _get_web_search_policy
+
+
+@pytest.mark.parametrize(
+    ("activity", "expected"),
+    [
+        ("off", "Web search is disabled"),
+        ("low", "only when the user explicitly asks"),
+        ("medium", "time-sensitive facts"),
+        ("high", "Proactively use web_search"),
+        ("max", "Aggressively use web_search"),
+    ],
+)
+def test_web_search_activity_changes_system_policy(
+    activity: WebSearchActivity, expected: str
+) -> None:
+    config = build_test_vibe_config(
+        autonomy=AutonomyConfig(web_search_activity=activity)
+    )
+
+    assert expected in _get_web_search_policy(config)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fake git shell script is POSIX-only")

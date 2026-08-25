@@ -77,7 +77,7 @@ class CommandRegistry:
             "effort": Command(
                 aliases=frozenset(["/effort"]),
                 description=(
-                    "Tune thinking and the 0-16 subagent limit; includes UltraCode"
+                    "Tune thinking, agents, accuracy, and web search; includes UltraCode"
                 ),
                 handler="_effort_command",
                 side_channel=True,

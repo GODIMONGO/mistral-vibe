@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from vibe.app_server._model import ProtocolModel
 from vibe.config_values import (
+    ACCURACY_LEVELS as ACCURACY_LEVELS,
+    ACCURACY_TEMPERATURES as ACCURACY_TEMPERATURES,
     MAX_PARALLEL_SUBAGENTS as MAX_PARALLEL_SUBAGENTS,
     MIN_PARALLEL_SUBAGENTS as MIN_PARALLEL_SUBAGENTS,
     THINKING_LEVELS as THINKING_LEVELS,
+    WEB_SEARCH_ACTIVITY_LEVELS as WEB_SEARCH_ACTIVITY_LEVELS,
+    AccuracyLevel as AccuracyLevel,
     AudioClient,
     SpeechOutputFormat,
     ThinkingLevel as ThinkingLevel,
     TranscriptionEncoding,
+    WebSearchActivity as WebSearchActivity,
 )
 
 
@@ -16,6 +21,7 @@ class ModelConfigView(ProtocolModel):
     name: str
     alias: str
     thinking: ThinkingLevel
+    temperature: float
     supports_images: bool
     display_name: str
 
@@ -61,6 +67,7 @@ class AutonomyConfigView(ProtocolModel):
     goal_advisor_model: str
     reviewer_model: str
     max_parallel_subagents: int
+    web_search_activity: WebSearchActivity
 
 
 class ConfigView(ProtocolModel):

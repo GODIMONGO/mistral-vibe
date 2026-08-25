@@ -2,12 +2,50 @@ from __future__ import annotations
 
 import pytest
 
+from vibe.setup.onboarding import context as context_module
 from vibe.setup.onboarding.context import (
+    OnboardingContext,
     _normalize_origin,
     is_likely_mistral_private_cloud_domain,
     is_valid_custom_domain,
     resolve_browser_auth_urls,
 )
+
+
+def test_load_for_model_selects_exact_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        context_module,
+        "_build_onboarding_snapshot_payload",
+        lambda **_kwargs: {
+            "active_model": "active",
+            "providers": [
+                {"name": "main", "api_base": "https://main.example/v1"},
+                {"name": "smart", "api_base": "https://smart.example/v1"},
+            ],
+            "models": [
+                {"name": "main-model", "alias": "active", "provider": "main"},
+                {"name": "smart-model", "alias": "advisor", "provider": "smart"},
+            ],
+        },
+    )
+
+    loaded = OnboardingContext.load_for_model("advisor")
+
+    assert loaded.provider.name == "smart"
+
+
+def test_load_for_model_rejects_unknown_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        context_module,
+        "_build_onboarding_snapshot_payload",
+        lambda **_kwargs: {
+            "providers": [{"name": "main", "api_base": "https://main.example/v1"}],
+            "models": [{"name": "main-model", "alias": "active", "provider": "main"}],
+        },
+    )
+
+    with pytest.raises(ValueError, match="Model alias 'missing'"):
+        OnboardingContext.load_for_model("missing")
 
 
 def test_resolve_browser_auth_urls_bare_domain_adds_scheme_and_api() -> None:

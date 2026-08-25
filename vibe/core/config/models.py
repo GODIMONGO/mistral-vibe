@@ -61,6 +61,66 @@ class ExperimentsConfig(BaseSettings):
     client_key: str = "sdk-OE8yJgTXZY6tj"
 
 
+class AutonomyAggressiveness(StrEnum):
+    LOW = auto()
+    MEDIUM = auto()
+    HIGH = auto()
+    MAX = auto()
+
+
+class AutonomyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    aggressiveness: AutonomyAggressiveness = AutonomyAggressiveness.MEDIUM
+    goal_advisor_model: str = ""
+    reviewer_model: str = ""
+    max_review_retries: int = Field(default=3, ge=1, le=10)
+    max_parallel_subagents: int = Field(default=4, ge=1, le=16)
+    max_live_child_runtimes: int = Field(default=8, ge=1, le=64)
+    max_subagent_result_chars: int = Field(default=32768, ge=1024)
+    require_worker: bool = True
+    require_review: bool = True
+
+    @property
+    def effective_parallel_subagents(self) -> int:
+        match self.aggressiveness:
+            case AutonomyAggressiveness.LOW:
+                cap = 1
+            case AutonomyAggressiveness.MEDIUM:
+                cap = 2
+            case AutonomyAggressiveness.HIGH:
+                cap = 4
+            case AutonomyAggressiveness.MAX:
+                cap = 16
+        return min(self.max_parallel_subagents, cap)
+
+    @property
+    def effective_review_retries(self) -> int:
+        match self.aggressiveness:
+            case AutonomyAggressiveness.LOW:
+                cap = 1
+            case AutonomyAggressiveness.MEDIUM:
+                cap = 2
+            case AutonomyAggressiveness.HIGH:
+                cap = 3
+            case AutonomyAggressiveness.MAX:
+                cap = 10
+        return min(self.max_review_retries, cap)
+
+    @property
+    def context_refresh_turns(self) -> int:
+        match self.aggressiveness:
+            case AutonomyAggressiveness.LOW:
+                return 32
+            case AutonomyAggressiveness.MEDIUM:
+                return 16
+            case AutonomyAggressiveness.HIGH:
+                return 10
+            case AutonomyAggressiveness.MAX:
+                return 6
+
+
 class SessionLoggingConfig(BaseSettings):
     save_dir: str = ""
     session_prefix: str = "session"

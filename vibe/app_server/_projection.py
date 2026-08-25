@@ -714,6 +714,7 @@ def _project_agent(profile: AgentProfile) -> AgentSummary:
         description=profile.description,
         safety=profile.safety,
         agent_type=profile.agent_type,
+        cycleable=profile.cycleable,
     )
 
 

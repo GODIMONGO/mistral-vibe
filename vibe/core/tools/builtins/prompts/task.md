@@ -1,1 +1,1 @@
-Launch a subagent for complex multi-step work. Provide a self-contained description. The subagent runs read-only and returns a final message — summarize it to the user yourself.
+Launch one configured subagent for complex multi-step work and provide a self-contained description. Capabilities and permissions depend on the selected profile: `explore`, `goal-advisor`, and `reviewer` are read-only, while `worker` can edit files and use its permissioned shell. The subagent returns a bounded final result; integrate and verify it yourself.

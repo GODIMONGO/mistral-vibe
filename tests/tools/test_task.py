@@ -181,7 +181,7 @@ class TestTaskToolExecution:
         assert events[1] == TaskResult(response="done", turns_used=1, completed=True)
         runner = ctx.subagent_runner
         assert isinstance(runner, FakeSubagentRunner)
-        assert runner.calls == [(args, ctx)]
+        assert runner.calls == [(args, ctx, 0)]
 
     @pytest.mark.asyncio
     async def test_requires_subagent_runner(
@@ -198,9 +198,23 @@ class TestTaskToolExecution:
 class FakeSubagentRunner:
     def __init__(self, events: list[ToolStreamEvent | TaskResult]) -> None:
         self.events = events
-        self.calls: list[tuple[TaskArgs, InvokeContext]] = []
+        self.calls: list[tuple[TaskArgs, InvokeContext, int]] = []
 
-    async def run(self, args: TaskArgs, ctx: InvokeContext):
-        self.calls.append((args, ctx))
+    async def run(
+        self, args: TaskArgs, ctx: InvokeContext, *, max_result_chars: int = 0
+    ):
+        self.calls.append((args, ctx, max_result_chars))
         for event in self.events:
             yield event
+
+    async def run_many(
+        self,
+        args: list[TaskArgs],
+        ctx: InvokeContext,
+        *,
+        max_parallel: int,
+        max_result_chars: int = 0,
+    ):
+        if False:
+            yield ToolStreamEvent(tool_name="swarm", message="", tool_call_id="")
+        return

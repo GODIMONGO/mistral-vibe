@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable, Generator
 import os
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 import keyring
@@ -48,6 +49,8 @@ from vibe.core.llm.types import BackendLike
 from vibe.core.utils.concurrency import run_sync
 from vibe.utils import keyring as keyring_utils
 from vibe.utils.platform import resolve_windows_shell
+
+_REAL_SYS_PLATFORM = sys.platform
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -237,12 +240,42 @@ def _mock_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _mock_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+def _mock_platform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
     """Mock platform to be Linux with /bin/sh shell for consistent test behavior.
 
     This ensures that platform-specific system prompt generation is consistent
     across all tests regardless of the actual platform running the tests.
     """
+    # pytest creates its temp root lazily and needs the real platform to choose
+    # its ownership check. GitPython and GitDB must also retain the real value:
+    # pretending their Windows process and file-lock code runs on Linux leaves
+    # worktree handles open and makes otherwise valid cleanup fail.
+    _ = tmp_path_factory.getbasetemp()
+    import importlib
+
+    git_modules = tuple(
+        importlib.import_module(name)
+        for name in (
+            "git.cmd",
+            "git.compat",
+            "git.config",
+            "git.index.base",
+            "git.index.fun",
+            "git.objects.submodule.base",
+            "git.repo.base",
+            "git.util",
+            "gitdb.stream",
+            "gitdb.util",
+        )
+    )
+
+    real_platform_sys = SimpleNamespace(
+        platform=_REAL_SYS_PLATFORM, maxsize=sys.maxsize, version_info=sys.version_info
+    )
+    for module in git_modules:
+        monkeypatch.setattr(module, "sys", real_platform_sys)
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("SHELL", "/bin/sh")
     resolve_auto_theme.cache_clear()

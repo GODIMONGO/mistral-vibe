@@ -118,6 +118,10 @@ Vibe comes with several built-in agent profiles, each designed for different use
 - **`plan`**: Read-only agent for exploration and planning. Auto-approves safe tools like `grep` and `read`.
 - **`accept-edits`**: The default agent. Auto-approves file edits only (`write_file`, `edit`). Useful for code refactoring.
 - **`auto-approve`**: Auto-approves all tool executions. Use with caution.
+- **`autonomous`**: Goal-driven mode with mandatory planning, worker delegation,
+  fresh verification, and a final reviewer. It can operate the computer through
+  Vibe's managed shell and runs with tool approvals bypassed; critical destructive
+  action safeguards still apply.
 
 Use the `--agent` flag to select a different agent:
 
@@ -132,7 +136,7 @@ To change the default agent used when `--agent` is not passed, set
 default_agent = "plan"
 ```
 
-Valid values are `ask`, `plan`, `accept-edits`, `auto-approve`,
+Valid values are `ask`, `plan`, `accept-edits`, `auto-approve`, `autonomous`,
 `lean` (only when listed in `installed_agents`), or the name of any
 custom agent file in `~/.vibe/agents/` or the project's `.vibe/agents/`
 directory. Subagents such as `explore` are not accepted.
@@ -156,6 +160,52 @@ The `task` tool allows the agent to delegate work to subagents:
 ```
 
 Create custom subagents by adding `agent_type = "subagent"` to your agent configuration. Vibe comes with a built-in subagent called `explore`, a read-only subagent for codebase exploration and skill loading used internally for delegation.
+
+### Autonomous Goal Mode
+
+Start the autonomous agent with:
+
+```bash
+vibe --agent autonomous
+```
+
+For every non-trivial goal it must consult a goal advisor, create a todo dependency
+plan, delegate implementation to workers, gather fresh evidence after the last
+change, and finish with a reviewer `PASS`. A bounded read-only `swarm` can run
+independent explore, advisor, or reviewer tasks concurrently. Worker changes remain
+separate `task` calls so their results can be reviewed before completion.
+
+The advisor and reviewer can use a stronger configured model without changing the
+main agent model. Any model alias is supported; a Devstral alias is a good default
+when using a Mistral API key. Configure the key for that model's provider with the
+masked setup flow:
+
+```bash
+vibe --setup --setup-model devstral-small
+```
+
+Then add the autonomy policy to `config.toml`:
+
+```toml
+[autonomy]
+enabled = true
+aggressiveness = "high"       # low | medium | high | max
+goal_advisor_model = "devstral-small"
+reviewer_model = "devstral-small" # defaults to the advisor model
+max_parallel_subagents = 4
+max_live_child_runtimes = 8
+max_subagent_result_chars = 32768
+max_review_retries = 3
+require_worker = true
+require_review = true
+```
+
+`low` minimizes concurrency and review retries; `max` uses the configured limits
+and refreshes compact context most often. Subagent output and the number of live
+child runtimes are bounded; completed evicted sessions remain persisted and are
+loaded again on demand. If the role model uses another provider, define that
+provider/model normally and run `--setup-model` with its exact alias. Credentials
+stay in the environment/keyring flow and are redacted from config introspection.
 
 ### Interactive User Questions
 

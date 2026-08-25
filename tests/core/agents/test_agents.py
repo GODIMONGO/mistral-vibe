@@ -4,8 +4,17 @@ import pytest
 
 from tests.conftest import ConfigBuilder, OrchestratorLoader
 from vibe.core.agents.manager import AgentManager
-from vibe.core.agents.models import BUILTIN_AGENTS, EXPLORE, AgentSafety, AgentType
-from vibe.core.config import VibeConfigSchema
+from vibe.core.agents.models import (
+    AUTONOMOUS,
+    BUILTIN_AGENTS,
+    EXPLORE,
+    GOAL_ADVISOR,
+    REVIEWER,
+    WORKER,
+    AgentSafety,
+    AgentType,
+)
+from vibe.core.config import AutonomyConfig, ModelConfig, VibeConfigSchema
 
 
 class TestAgentProfile:
@@ -28,6 +37,42 @@ class TestAgentProfile:
         """Test that BUILTIN_AGENTS includes explore."""
         assert "explore" in BUILTIN_AGENTS
         assert BUILTIN_AGENTS["explore"] is EXPLORE
+
+    def test_autonomy_profiles_are_registered_with_expected_roles(self) -> None:
+        assert AUTONOMOUS.agent_type is AgentType.AGENT
+        assert GOAL_ADVISOR.agent_type is AgentType.SUBAGENT
+        assert REVIEWER.agent_type is AgentType.SUBAGENT
+        assert WORKER.agent_type is AgentType.SUBAGENT
+        assert BUILTIN_AGENTS["autonomous"] is AUTONOMOUS
+        assert BUILTIN_AGENTS["goal-advisor"] is GOAL_ADVISOR
+        assert BUILTIN_AGENTS["reviewer"] is REVIEWER
+        assert BUILTIN_AGENTS["worker"] is WORKER
+
+    def test_autonomous_profile_approves_tools_and_allows_autonomy_roles(self) -> None:
+        assert AUTONOMOUS.safety is AgentSafety.YOLO
+        assert AUTONOMOUS.overrides["autonomy"] == {"enabled": True}
+        assert AUTONOMOUS.overrides["bypass_tool_permissions"] is True
+        assert AUTONOMOUS.overrides["managed_shell_tools_enabled"] is True
+        task_config = AUTONOMOUS.overrides["tools"]["task"]
+        assert task_config["permission"] == "always"
+        assert task_config["allowlist"] == [
+            "goal-advisor",
+            "reviewer",
+            "worker",
+            "explore",
+        ]
+
+    def test_advisor_and_reviewer_are_read_only(self) -> None:
+        for profile in (GOAL_ADVISOR, REVIEWER):
+            assert profile.safety is AgentSafety.SAFE
+            assert profile.overrides["enabled_tools"] == ["grep", "read_file", "skill"]
+
+    def test_worker_only_auto_approves_file_mutations(self) -> None:
+        assert WORKER.safety is AgentSafety.DESTRUCTIVE
+        tools = WORKER.overrides["tools"]
+        assert tools["edit"]["permission"] == "always"
+        assert tools["write_file"]["permission"] == "always"
+        assert "bash" in WORKER.overrides["enabled_tools"]
 
 
 class TestAgentManager:
@@ -113,6 +158,52 @@ class TestAgentManager:
         config = build_config()
         manager = AgentManager(load_orchestrator(config), initial_agent="plan")
         assert manager.active_profile.name == "plan"
+
+    def test_autonomous_profile_enables_autonomy_with_nested_defaults(
+        self,
+        build_config: ConfigBuilder,
+        load_orchestrator: OrchestratorLoader[VibeConfigSchema],
+    ) -> None:
+        manager = AgentManager(
+            load_orchestrator(build_config()), initial_agent="autonomous"
+        )
+
+        assert manager.config.autonomy.enabled is True
+        assert manager.config.autonomy.require_worker is True
+        assert manager.config.autonomy.require_review is True
+
+    @pytest.mark.parametrize(
+        ("agent_name", "expected_alias"),
+        [("goal-advisor", "smart-advisor"), ("reviewer", "smart-reviewer")],
+    )
+    def test_autonomy_role_uses_its_configured_model(
+        self,
+        agent_name: str,
+        expected_alias: str,
+        build_config: ConfigBuilder,
+        load_orchestrator: OrchestratorLoader[VibeConfigSchema],
+    ) -> None:
+        config = build_config(
+            active_model="main",
+            models=[
+                ModelConfig(name="main", alias="main", provider="mistral"),
+                ModelConfig(name="advisor", alias="smart-advisor", provider="mistral"),
+                ModelConfig(
+                    name="reviewer", alias="smart-reviewer", provider="mistral"
+                ),
+            ],
+            autonomy=AutonomyConfig(
+                enabled=True,
+                goal_advisor_model="smart-advisor",
+                reviewer_model="smart-reviewer",
+            ),
+        )
+
+        manager = AgentManager(
+            load_orchestrator(config), initial_agent=agent_name, allow_subagent=True
+        )
+
+        assert manager.config.get_active_model().alias == expected_alias
 
     def test_initial_agent_raises_when_agent_is_disabled(
         self,

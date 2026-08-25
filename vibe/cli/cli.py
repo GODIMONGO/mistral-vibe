@@ -392,9 +392,23 @@ def run_cli(args: argparse.Namespace) -> None:
     bootstrap_config_files()
 
     if args.setup:
-        from vibe.setup.onboarding import run_onboarding
+        from vibe.setup.onboarding import OnboardingApp, run_onboarding
+        from vibe.setup.onboarding.context import OnboardingContext
 
-        run_onboarding(launch_context=_build_cli_launch_context())
+        launch_context = _build_cli_launch_context()
+        setup_model = getattr(args, "setup_model", None)
+        if setup_model:
+            try:
+                context = OnboardingContext.load_for_model(setup_model)
+            except ValueError as exc:
+                rprint(f"[yellow]{exc}[/]")
+                sys.exit(1)
+            run_onboarding(
+                OnboardingApp(config=context, launch_context=launch_context),
+                launch_context=launch_context,
+            )
+        else:
+            run_onboarding(launch_context=launch_context)
         sys.exit(0)
 
     try:

@@ -111,7 +111,7 @@ def parse_arguments() -> argparse.Namespace:
         "--agent",
         metavar="NAME",
         default=None,
-        help="Agent to use (builtin: ask, plan, accept-edits, auto-approve, "
+        help="Agent to use (builtin: ask, plan, accept-edits, auto-approve, autonomous, "
         "or custom from ~/.vibe/agents/NAME.toml). Defaults to the "
         "'default_agent' config setting in both interactive and programmatic "
         "(-p/--prompt) mode.",
@@ -124,6 +124,14 @@ def parse_arguments() -> argparse.Namespace:
         help="Approves all tool calls without prompting for the selected agent.",
     )
     parser.add_argument("--setup", action="store_true", help="Setup API key and exit")
+    parser.add_argument(
+        "--setup-model",
+        metavar="ALIAS",
+        help=(
+            "Configure the API key for the provider used by a model alias. "
+            "Requires --setup; useful for a separate autonomy advisor model."
+        ),
+    )
     parser.add_argument(
         "--check-upgrade",
         action="store_true",
@@ -183,7 +191,10 @@ def parse_arguments() -> argparse.Namespace:
         metavar="SESSION_ID",
         help="Resume a session. Without SESSION_ID, shows an interactive picker.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.setup_model and not args.setup:
+        parser.error("--setup-model requires --setup")
+    return args
 
 
 def _enter_worktree(args: argparse.Namespace) -> PreparedWorktree:

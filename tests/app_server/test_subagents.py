@@ -51,8 +51,10 @@ from vibe.app_server.protocol import (
 from vibe.app_server.server import AppServer
 from vibe.app_server.session import AppServerSession
 from vibe.core.agent_loop import AgentLoop
-from vibe.core.config import SessionLoggingConfig
+from vibe.core.config import AutonomyConfig, SessionLoggingConfig
 from vibe.core.session.session_loader import MESSAGES_FILENAME
+from vibe.core.subagents import SwarmResult, TaskArgs, TaskResult
+from vibe.core.tools.base import InvokeContext
 from vibe.core.tools.models import ToolPermission
 from vibe.core.types import FunctionCall, LLMMessage, Role, ToolCall
 from vibe.utils.tool_presentation import (
@@ -118,6 +120,49 @@ async def _read_child(
     return response.state
 
 
+@pytest.mark.asyncio
+async def test_run_many_bounds_parallelism_and_preserves_result_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = SessionRuntimeRegistry(AsyncMock(), AsyncMock(), lambda _: 0)
+    active = 0
+    peak = 0
+    budgets: list[int] = []
+
+    async def fake_run_child(
+        task: TaskArgs, _ctx: InvokeContext, *, max_result_chars: int, **_kwargs
+    ):
+        nonlocal active, peak
+        budgets.append(max_result_chars)
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01 * (4 - int(task.task)))
+        active -= 1
+        yield TaskResult(response=task.task, turns_used=1, completed=True)
+
+    monkeypatch.setattr(registry, "_run_child", fake_run_child)
+    tasks = [TaskArgs(task=str(index)) for index in range(1, 4)]
+    events = [
+        event
+        async for event in registry.run_many(
+            tasks, InvokeContext(tool_call_id="swarm-1"), max_parallel=2
+        )
+    ]
+
+    assert peak == 2
+    assert budgets == [32_768, 32_768, 32_768]
+    assert events == [
+        SwarmResult(
+            results=[
+                TaskResult(response="1", turns_used=1, completed=True),
+                TaskResult(response="2", turns_used=1, completed=True),
+                TaskResult(response="3", turns_used=1, completed=True),
+            ],
+            completed_count=3,
+        )
+    ]
+
+
 async def _persist_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[SessionLoggingConfig, str, str, Path]:
@@ -169,6 +214,31 @@ async def test_root_handoff_updates_live_child_parent_routing() -> None:
 
     assert registry.child_belongs_to(child.session_id, new_parent_id)
     assert not registry.child_belongs_to(child.session_id, old_parent_id)
+    await registry.close()
+    await parent.aclose()
+
+
+@pytest.mark.asyncio
+async def test_autonomy_evicts_only_idle_child_runtimes() -> None:
+    parent = build_test_agent_loop(
+        config=build_test_vibe_config(
+            autonomy=AutonomyConfig(enabled=True, max_live_child_runtimes=2)
+        )
+    )
+    registry = SessionRuntimeRegistry(AsyncMock(), AsyncMock(), lambda _: 0)
+    children = [
+        await AgentRuntimeFactory().create_child(parent, "explore") for _ in range(3)
+    ]
+    runtimes = [registry._build_child_runtime(child) for child in children]
+    for child, runtime in zip(children, runtimes, strict=True):
+        registry._children[child.session_id] = runtime
+
+    await registry._trim_idle_children(parent, keep_session_id=children[-1].session_id)
+
+    assert list(registry._children) == [children[1].session_id, children[2].session_id]
+    assert runtimes[0]._closed
+    assert not runtimes[1]._closed
+    assert not runtimes[2]._closed
     await registry.close()
     await parent.aclose()
 

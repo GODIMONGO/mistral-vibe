@@ -15,7 +15,7 @@ from vibe.core.config.harness_files import (
     get_harness_files_manager,
 )
 from vibe.core.paths import VIBE_HOME
-from vibe.core.prompts import UtilityPrompt
+from vibe.core.prompts import SystemPrompt, UtilityPrompt
 from vibe.core.utils import (
     WindowsShellKind,
     get_platform_display_name,
@@ -363,6 +363,11 @@ def get_universal_system_prompt(
     cwd = (cwd or Path.cwd()).resolve()
     harness_files = harness_files or get_harness_files_manager()
     sections = [_interpolate_prompt(config.system_prompt)]
+
+    if config.autonomy.enabled and config.system_prompt_id != SystemPrompt.AUTONOMOUS:
+        sections.append(
+            "## Autonomous operating protocol\n\n" + SystemPrompt.AUTONOMOUS.read()
+        )
 
     if headless:
         sections.append(_get_headless_section())

@@ -21,6 +21,10 @@ class BuiltinAgentName(StrEnum):
     AUTO_APPROVE = "auto-approve"
     EXPLORE = "explore"
     LEAN = "lean"
+    AUTONOMOUS = "autonomous"
+    GOAL_ADVISOR = "goal-advisor"
+    REVIEWER = "reviewer"
+    WORKER = "worker"
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,7 @@ class AgentProfile:
     description: str
     safety: AgentSafety
     agent_type: AgentType = AgentType.AGENT
+    cycleable: bool = True
     overrides: dict[str, Any] = field(default_factory=dict)
     install_required: bool = False
 
@@ -107,6 +112,74 @@ EXPLORE = AgentProfile(
     },
 )
 
+AUTONOMOUS = AgentProfile(
+    name=BuiltinAgentName.AUTONOMOUS,
+    display_name="Autonomous",
+    description="Goal-driven agent with planning, delegation, and review",
+    safety=AgentSafety.YOLO,
+    cycleable=False,
+    overrides={
+        "autonomy": {"enabled": True},
+        "bypass_tool_permissions": True,
+        "managed_shell_tools_enabled": True,
+        "disabled_tools": ["exit_plan_mode"],
+        "tools": {
+            "task": {
+                "permission": "always",
+                "allowlist": ["goal-advisor", "reviewer", "worker", "explore"],
+            }
+        },
+    },
+)
+
+GOAL_ADVISOR = AgentProfile(
+    name=BuiltinAgentName.GOAL_ADVISOR,
+    display_name="Goal Advisor",
+    description="Read-only goal decomposition and acceptance-criteria advisor",
+    safety=AgentSafety.SAFE,
+    agent_type=AgentType.SUBAGENT,
+    overrides={
+        "enabled_tools": ["grep", "read_file", "skill"],
+        "system_prompt_id": "advisor",
+    },
+)
+
+REVIEWER = AgentProfile(
+    name=BuiltinAgentName.REVIEWER,
+    display_name="Reviewer",
+    description="Read-only completion and evidence reviewer",
+    safety=AgentSafety.SAFE,
+    agent_type=AgentType.SUBAGENT,
+    overrides={
+        "enabled_tools": ["grep", "read_file", "skill"],
+        "system_prompt_id": "reviewer",
+    },
+)
+
+WORKER = AgentProfile(
+    name=BuiltinAgentName.WORKER,
+    display_name="Worker",
+    description="Implementation worker with approval-free file edits",
+    safety=AgentSafety.DESTRUCTIVE,
+    agent_type=AgentType.SUBAGENT,
+    overrides={
+        "enabled_tools": [
+            "bash",
+            "edit",
+            "grep",
+            "read_file",
+            "skill",
+            "todo",
+            "write_file",
+        ],
+        "system_prompt_id": "worker",
+        "tools": {
+            "edit": {"permission": "always"},
+            "write_file": {"permission": "always"},
+        },
+    },
+)
+
 LEAN = AgentProfile(
     name=BuiltinAgentName.LEAN,
     display_name="Lean",
@@ -155,4 +228,8 @@ BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.AUTO_APPROVE: AUTO_APPROVE,
     BuiltinAgentName.EXPLORE: EXPLORE,
     BuiltinAgentName.LEAN: LEAN,
+    BuiltinAgentName.AUTONOMOUS: AUTONOMOUS,
+    BuiltinAgentName.GOAL_ADVISOR: GOAL_ADVISOR,
+    BuiltinAgentName.REVIEWER: REVIEWER,
+    BuiltinAgentName.WORKER: WORKER,
 }

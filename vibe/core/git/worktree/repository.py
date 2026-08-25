@@ -60,6 +60,7 @@ class PreparedWorktree:
         the named branch so detached-HEAD commits still block cleanup.
         """
         git = _git_python()
+        repo = None
         try:
             repo = git.repo(self.root)
             status_lines = repo.git.status(
@@ -74,6 +75,9 @@ class PreparedWorktree:
             ValueError,
         ) as e:
             raise WorktreeError(f"Failed to inspect worktree {self.name!r}: {e}") from e
+        finally:
+            if repo is not None:
+                repo.close()
 
         return WorktreeCleanupState(
             has_uncommitted_changes=any(

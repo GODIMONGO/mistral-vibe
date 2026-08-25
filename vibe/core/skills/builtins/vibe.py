@@ -168,7 +168,29 @@ voice_mode_enabled = false
 narrator_enabled = false
 active_transcribe_model = "voxtral-realtime"
 active_tts_model = "voxtral-tts"
+
+# Autonomous goal mode (also enabled by `--agent autonomous`)
+[autonomy]
+enabled = false
+aggressiveness = "medium"         # low | medium | high | max
+goal_advisor_model = ""           # Empty means the active model
+reviewer_model = ""               # Empty means advisor, then active model
+max_review_retries = 3
+max_parallel_subagents = 4
+max_live_child_runtimes = 8
+max_subagent_result_chars = 32768
+require_worker = true
+require_review = true
 ```
+
+Autonomous mode requires advisor consultation, a terminal todo plan, worker
+delegation, fresh evidence after the last mutation, and a final reviewer `PASS`.
+Its read-only `swarm` is concurrency-bounded. Child output and resident runtimes
+are bounded; persisted child sessions reload on demand. Use
+`vibe --setup --setup-model ALIAS` to configure the exact provider credential for
+an advisor/reviewer model without exposing the key. A configured Devstral alias is
+the recommended Mistral-backed advisor; an empty alias safely follows the active
+model.
 
 ### OpenTelemetry Tracing
 
@@ -700,6 +722,10 @@ There are two kinds of agents:
 - **plan**: Planning-focused agent
 - **accept-edits**: Default agent; auto-approves file edits but asks for other tools
 - **auto-approve**: Auto-approves all tool calls
+- **autonomous**: Goal advisor, mandatory todo planning and worker delegation,
+  bounded read-only swarm, fresh verification, and final reviewer. Uses managed
+  shell computer control with permission bypass while retaining critical safety
+  instructions.
 - **lean**: Specialized Lean 4 proof assistant. Not available by default — must be
   installed with `/leanstall` (removed with `/unleanstall`). Use `--agent lean
   --auto-approve` or `--agent lean --yolo` to run Lean mode without tool prompts.
@@ -708,6 +734,9 @@ There are two kinds of agents:
 
 - **explore**: Read-only codebase exploration subagent with grep, file reading,
   and skill loading. Spawned by the model, not selectable by the user.
+- **goal-advisor**: Read-only acceptance-criteria and dependency-plan advisor.
+- **reviewer**: Read-only evidence reviewer; emits `VERDICT: PASS` or `FAIL`.
+- **worker**: Implementation subagent with file tools and permissioned shell access.
 
 Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 

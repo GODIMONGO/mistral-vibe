@@ -51,7 +51,9 @@ class ClientSessionState:
 
     def next_agent(self, current_name: str | None = None) -> AgentSummary:
         primary = [
-            agent for agent in self.agents if agent.agent_type is AgentType.AGENT
+            agent
+            for agent in self.agents
+            if agent.agent_type is AgentType.AGENT and agent.cycleable
         ]
         if not primary:
             raise RuntimeError("The app server returned no primary agents")

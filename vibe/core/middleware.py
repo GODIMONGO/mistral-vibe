@@ -109,6 +109,23 @@ class AutoCompactMiddleware:
         pass
 
 
+class AutonomyRefreshMiddleware:
+    def __init__(self, turn_interval: int) -> None:
+        self.turn_interval = turn_interval
+        self._last_refresh_step = 0
+
+    async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
+        completed_steps = max(0, context.stats.steps - 1)
+        if completed_steps - self._last_refresh_step < self.turn_interval:
+            return MiddlewareResult()
+        self._last_refresh_step = completed_steps
+        return MiddlewareResult(action=MiddlewareAction.COMPACT)
+
+    def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
+        if reset_reason is ResetReason.STOP:
+            self._last_refresh_step = 0
+
+
 class ContextWarningMiddleware:
     def __init__(self, threshold_percent: float = 0.5) -> None:
         self.threshold_percent = threshold_percent

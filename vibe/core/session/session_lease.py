@@ -64,6 +64,13 @@ class SessionLease:
             return
         file = self._file
         self._file = None
+        if _is_windows():
+            # Windows releases byte-range locks when the file handle closes.
+            # Avoid LK_UNLCK here: acquire/release can run in different
+            # asyncio worker threads, and the CRT rejects a cross-thread
+            # explicit unlock even though closing the handle is safe.
+            file.close()
+            return
         try:
             _release_file_lock(file)
         finally:
@@ -80,17 +87,17 @@ def _acquire_file_lock(file: Any) -> None:
     if _is_windows():
         msvcrt = cast(Any, __import__("msvcrt"))
 
-        file.seek(0)
-        if file.read(1) == b"":
-            file.write(b"\0")
-            file.flush()
-        file.seek(0)
         try:
+            file.seek(0)
+            if file.read(1) == b"":
+                file.write(b"\0")
+                file.flush()
+            file.seek(0)
             msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError as exc:
             raise BlockingIOError from exc
         return
-    import fcntl
+    fcntl = cast(Any, __import__("fcntl"))
 
     try:
         fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -105,7 +112,7 @@ def _release_file_lock(file: Any) -> None:
         file.seek(0)
         msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
         return
-    import fcntl
+    fcntl = cast(Any, __import__("fcntl"))
 
     fcntl.flock(file.fileno(), fcntl.LOCK_UN)
 

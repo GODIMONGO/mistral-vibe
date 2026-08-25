@@ -1,0 +1,1 @@
+Run several independent read-only investigations concurrently. Use only when the tasks do not depend on one another. Results are returned in input order even when agents finish out of order. Only `explore`, `goal-advisor`, and `reviewer` agents are allowed; workers that edit the shared workspace are forbidden.

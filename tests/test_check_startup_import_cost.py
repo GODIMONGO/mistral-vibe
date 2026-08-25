@@ -156,6 +156,26 @@ def test_find_wheel_raises_on_multiple_wheels(tmp_path: Path) -> None:
         mod._find_wheel(dist_dir)
 
 
+def test_venv_python_uses_windows_executable_suffix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(mod, "_run", lambda *_args, **_kwargs: None)
+
+    assert mod._venv_python(tmp_path / "env") == (
+        tmp_path / "env" / "Scripts" / "python.exe"
+    )
+
+
+def test_default_config_path_accepts_single_legacy_name(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    legacy = scripts / "startup_import_cost.vibe.toml"
+    legacy.write_text("", encoding="utf-8")
+
+    assert mod._default_config_path(tmp_path) == legacy
+
+
 def test_measure_strace_skips_on_non_zero_exit(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

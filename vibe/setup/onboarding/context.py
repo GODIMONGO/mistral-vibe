@@ -294,3 +294,29 @@ class OnboardingContext:
                 "Onboarding config fallback activated; using defaults", exc_info=True
             )
             return cls.from_config(VibeConfigSchema.model_construct())
+
+    @classmethod
+    def load_for_model(cls, model_alias: str) -> OnboardingContext:
+        snapshot = _OnboardingSnapshot.model_validate(
+            _build_onboarding_snapshot_payload()
+        )
+        models = _validated_payloads(snapshot.models, ModelConfig)
+        model = next((item for item in models if item.alias == model_alias), None)
+        if model is None:
+            raise ValueError(f"Model alias '{model_alias}' is not configured.")
+
+        providers = {
+            provider.name: provider
+            for provider in _validated_payloads(snapshot.providers, ProviderConfig)
+        }
+        provider = providers.get(model.provider)
+        if provider is None:
+            raise ValueError(
+                f"Provider '{model.provider}' for model '{model_alias}' is not configured."
+            )
+        return cls(
+            provider=provider,
+            vibe_base_url=snapshot.vibe_base_url,
+            console_base_url=snapshot.console_base_url,
+            theme=snapshot.theme,
+        )

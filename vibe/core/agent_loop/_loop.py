@@ -26,6 +26,7 @@ from vibe.core.agent_loop_hooks import AgentLoopHooksMixin, PostToolFinalization
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
 from vibe.core.autocompletion.path_prompt import build_path_prompt_payload
+from vibe.core.autonomy import AutonomyCoordinator, AutonomyDecisionKind, AutonomyPolicy
 from vibe.core.checkpoints import Checkpointer, CheckpointRecorder, FileStore
 from vibe.core.compaction import (
     CompactionFailedError as CompactionFailedError,
@@ -66,6 +67,7 @@ from vibe.core.llm.types import BackendLike
 from vibe.core.middleware import (
     PLAN_AGENT_EXIT,
     AutoCompactMiddleware,
+    AutonomyRefreshMiddleware,
     ContextWarningMiddleware,
     ConversationContext,
     MiddlewareAction,
@@ -1495,6 +1497,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self.middleware_pipeline.add(TokenLimitMiddleware(self._max_session_tokens))
 
         self.middleware_pipeline.add(AutoCompactMiddleware())
+        if self.config.autonomy.enabled:
+            self.middleware_pipeline.add(
+                AutonomyRefreshMiddleware(self.config.autonomy.context_refresh_turns)
+            )
         if self.config.context_warnings:
             self.middleware_pipeline.add(ContextWarningMiddleware(0.5))
 
@@ -1595,6 +1601,20 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             messages=self.messages, stats=self.stats, config=self.config
         )
 
+    def _new_autonomy_coordinator(self) -> AutonomyCoordinator | None:
+        if self._is_subagent or not self.config.autonomy.enabled:
+            return None
+        autonomy = self.config.autonomy
+        coordinator = AutonomyCoordinator(
+            AutonomyPolicy(
+                max_retries=autonomy.effective_review_retries,
+                require_worker=autonomy.require_worker,
+                require_review=autonomy.require_review,
+            )
+        )
+        coordinator.start_turn()
+        return coordinator
+
     def _build_backend_metadata(
         self, call_type: TelemetryCallType | None = None
     ) -> TelemetryRequestMetadata:
@@ -1688,7 +1708,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if self._hooks_manager:
             self._hooks_manager.reset_retry_count()
 
-    async def _conversation_loop(
+    async def _conversation_loop(  # noqa: PLR0912
         self,
         user_msg: str,
         client_message_id: str | None = None,
@@ -1713,6 +1733,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             yield event
 
         try:
+            autonomy = self._new_autonomy_coordinator()
             should_break_loop = False
             first_llm_turn = True
             self._reactive_recovery_used = False
@@ -1733,6 +1754,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     async for event in self._perform_llm_turn():
                         if is_user_cancellation_event(event):
                             user_cancelled = True
+                        if autonomy is not None:
+                            autonomy.observe(event)
                         yield event
                 except ContextTooLongError:
                     if not self._should_self_heal():
@@ -1769,6 +1792,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     for hook_event in hook_events:
                         yield hook_event
                     should_break_loop = self._queue_post_turn_retry(retry_msg)
+                    if should_break_loop and autonomy is not None:
+                        should_break_loop, blocked_event = (
+                            self._apply_autonomy_completion(autonomy)
+                        )
+                        if blocked_event is not None:
+                            yield blocked_event
+                            return
 
         finally:
             await self._save_messages()
@@ -1779,6 +1809,31 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return True
         self.messages.append(retry_msg)
         return False
+
+    def _apply_autonomy_completion(
+        self, coordinator: AutonomyCoordinator
+    ) -> tuple[bool, AssistantEvent | None]:
+        decision = coordinator.evaluate_completion()
+        match decision.kind:
+            case AutonomyDecisionKind.RETRY:
+                should_break = self._queue_post_turn_retry(
+                    LLMMessage(
+                        role=Role.user,
+                        content=decision.instruction or "Continue working.",
+                        injected=True,
+                    )
+                )
+                return should_break, None
+            case AutonomyDecisionKind.BLOCK:
+                return True, AssistantEvent(
+                    content=(
+                        f"<{VIBE_STOP_EVENT_TAG}>{decision.instruction}"
+                        f"</{VIBE_STOP_EVENT_TAG}>"
+                    ),
+                    stopped_by_middleware=True,
+                )
+            case AutonomyDecisionKind.PASS:
+                return True, None
 
     def _skill_already_loaded(self, name: str) -> bool:
         marker = skill_content_marker(name)

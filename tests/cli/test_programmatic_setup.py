@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import cast
 
 from git import Repo
 import pytest
@@ -45,6 +46,7 @@ def _make_args(**overrides: object) -> argparse.Namespace:
         "auto_approve": False,
         "check_upgrade": False,
         "setup": False,
+        "setup_model": None,
         "workdir": None,
         "worktree": None,
         "add_dir": [],
@@ -65,6 +67,38 @@ def _init_repo(workdir: Path) -> Repo:
     repo.index.add(["file.txt"])
     repo.index.commit("initial")
     return repo
+
+
+def test_setup_model_selects_its_provider_for_onboarding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _make_args(setup=True, setup_model="advisor-smart")
+    calls: list[object] = []
+    context = object()
+    app = object()
+
+    monkeypatch.setattr(cli_mod, "bootstrap_config_files", lambda: None)
+    monkeypatch.setattr(
+        onboarding_mod.OnboardingContext,
+        "load_for_model",
+        lambda alias: calls.append(alias) or context,
+    )
+    monkeypatch.setattr(
+        onboarding_mod, "OnboardingApp", lambda **kwargs: calls.append(kwargs) or app
+    )
+    monkeypatch.setattr(
+        onboarding_mod,
+        "run_onboarding",
+        lambda selected_app, **kwargs: calls.append((selected_app, kwargs)),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.run_cli(args)
+
+    assert exc_info.value.code == 0
+    assert calls[0] == "advisor-smart"
+    assert cast(dict[str, object], calls[1])["config"] is context
+    assert cast(tuple[object, object], calls[2])[0] is app
 
 
 def test_programmatic_mode_does_not_run_onboarding_on_missing_api_key(

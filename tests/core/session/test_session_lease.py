@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -19,6 +20,19 @@ def test_session_lease_is_exclusive_and_recoverable(tmp_path: Path) -> None:
             SessionLease(tmp_path, SESSION_ID).acquire()
     finally:
         first.release()
+
+    SessionLease(tmp_path, SESSION_ID).acquire().release()
+
+
+def test_session_lease_can_release_from_a_different_thread(tmp_path: Path) -> None:
+    with (
+        ThreadPoolExecutor(max_workers=1) as acquiring_executor,
+        ThreadPoolExecutor(max_workers=1) as releasing_executor,
+    ):
+        lease = acquiring_executor.submit(
+            SessionLease(tmp_path, SESSION_ID).acquire
+        ).result()
+        releasing_executor.submit(lease.release).result()
 
     SessionLease(tmp_path, SESSION_ID).acquire().release()
 
@@ -58,7 +72,10 @@ def test_windows_locking_uses_a_nonblocking_one_byte_region(
 def test_session_lease_rejects_a_symlinked_active_namespace(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
-    (tmp_path / "active").symlink_to(outside, target_is_directory=True)
+    try:
+        (tmp_path / "active").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("Current platform/user cannot create symbolic links")
 
     with pytest.raises(ValueError, match="symbolic link"):
         SessionLease(tmp_path, SESSION_ID).acquire()

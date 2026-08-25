@@ -36,6 +36,7 @@ from vibe.core.config._defaults import (
 # lives in vibe.config_values.
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.config.models import (
+    AutonomyConfig,
     ConnectorConfig,
     ExperimentsConfig,
     MCPServer,
@@ -290,6 +291,9 @@ class VibeConfigSchema(ConfigSchema):
         ),
     )
     compaction_model: Annotated[ModelConfig | None, WithReplaceMerge()] = None
+    autonomy: Annotated[AutonomyConfig, WithReplaceMerge()] = Field(
+        default_factory=AutonomyConfig
+    )
     auto_compact_threshold: Annotated[int, WithReplaceMerge()] = (
         DEFAULT_AUTO_COMPACT_THRESHOLD
     )
@@ -396,7 +400,7 @@ class VibeConfigSchema(ConfigSchema):
         default=BuiltinAgentName.ACCEPT_EDITS,
         description=(
             "Agent profile to use when no --agent flag is passed. "
-            "Builtin: ask, plan, accept-edits, auto-approve. "
+            "Builtin: ask, plan, accept-edits, auto-approve, autonomous. "
             "Applies in both interactive and programmatic (-p/--prompt) mode."
         ),
     )
@@ -578,6 +582,22 @@ class VibeConfigSchema(ConfigSchema):
         if self.compaction_model is not None:
             return self.compaction_model
         return self.get_active_model()
+
+    def resolve_goal_advisor_model(self) -> ModelConfig:
+        alias = self.autonomy.goal_advisor_model
+        if not alias:
+            return self.get_active_model()
+        if model := self.models.get(alias):
+            return model
+        raise ValueError(f"Goal advisor model '{alias}' not found in configuration.")
+
+    def resolve_reviewer_model(self) -> ModelConfig:
+        alias = self.autonomy.reviewer_model
+        if not alias:
+            return self.resolve_goal_advisor_model()
+        if model := self.models.get(alias):
+            return model
+        raise ValueError(f"Reviewer model '{alias}' not found in configuration.")
 
     def connectors_by_name(self) -> dict[str, ConnectorConfig]:
         return {c.name: c for c in self.connectors}
@@ -771,6 +791,18 @@ class VibeConfigSchema(ConfigSchema):
         return self
 
     @model_validator(mode="after")
+    def _check_autonomy_models(self) -> VibeConfigSchema:
+        if not self.autonomy.enabled and not (
+            self.autonomy.goal_advisor_model or self.autonomy.reviewer_model
+        ):
+            return self
+        advisor = self.resolve_goal_advisor_model()
+        reviewer = self.resolve_reviewer_model()
+        self.get_provider_for_model(advisor)
+        self.get_provider_for_model(reviewer)
+        return self
+
+    @model_validator(mode="after")
     def _check_api_key(self, info: ValidationInfo) -> VibeConfigSchema:
         if info.context is not None and not info.context.get("require_api_key", True):
             return self
@@ -781,6 +813,21 @@ class VibeConfigSchema(ConfigSchema):
                 raise MissingAPIKeyError(api_key_env, provider.name)
         except ValueError:
             pass
+        if not self.autonomy.enabled:
+            return self
+        autonomy_models = (
+            self.resolve_goal_advisor_model(),
+            self.resolve_reviewer_model(),
+        )
+        providers = {
+            provider.name: provider
+            for model in autonomy_models
+            for provider in (self.get_provider_for_model(model),)
+        }
+        for provider in providers.values():
+            api_key_env = provider.api_key_env_var
+            if api_key_env and not resolve_api_key(api_key_env):
+                raise MissingAPIKeyError(api_key_env, provider.name)
         return self
 
     @model_validator(mode="after")

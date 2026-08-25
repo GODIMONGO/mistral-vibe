@@ -110,7 +110,16 @@ def _find_wheel(dist_dir: Path) -> Path:
 def _venv_python(root: Path) -> Path:
     _run(["uv", "venv", "--python", sys.executable, str(root)])
     bin_dir = "Scripts" if sys.platform == "win32" else "bin"
-    return root / bin_dir / "python"
+    executable = "python.exe" if sys.platform == "win32" else "python"
+    return root / bin_dir / executable
+
+
+def _default_config_path(project: Path) -> Path:
+    expected = project / "scripts" / f"startup_import_cost.{project.name}.toml"
+    if expected.is_file():
+        return expected
+    candidates = sorted((project / "scripts").glob("startup_import_cost.*.toml"))
+    return candidates[0] if len(candidates) == 1 else expected
 
 
 def _install(python: Path, wheel: Path, project: Path) -> None:
@@ -266,11 +275,7 @@ def main() -> None:
     if not project.is_dir():
         raise SystemExit(f"project dir not found: {project}")
     dist_name = args.dist_name or _project_name(project)
-    config_path = (
-        Path(args.config)
-        if args.config
-        else project / "scripts" / f"startup_import_cost.{project.name}.toml"
-    )
+    config_path = Path(args.config) if args.config else _default_config_path(project)
     if not config_path.is_file():
         raise SystemExit(f"config not found: {config_path}")
     config = _load_config(config_path)

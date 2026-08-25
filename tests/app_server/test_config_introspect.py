@@ -8,14 +8,16 @@ from vibe.app_server._config_introspect import (
     DEFAULT_ORIGIN,
     HIDDEN_SETTINGS,
     POPULAR_SETTINGS,
+    REDACTED_VALUE,
     build_field_wires,
     classify_annotation,
     collect_layer_values,
+    redact_config_value,
 )
 from vibe.app_server.protocol import ConfigFieldKind, ConfigLayerValueWire
 from vibe.core.config.layers.overrides import OverridesLayer
 from vibe.core.config.layers.user import UserConfigLayer
-from vibe.core.config.models import ModelConfig, OtelRedactionMode
+from vibe.core.config.models import ModelConfig, OtelRedactionMode, ProviderConfig
 from vibe.core.config.vibe_schema import VibeConfigSchema
 
 
@@ -93,6 +95,50 @@ def test_build_field_wires_resolves_layers(
     assert by_name["active_model"].kind is ConfigFieldKind.STR
     assert by_name["theme"].origin == "user-toml"
     assert by_name["theme"].layer_values[-1].layer == DEFAULT_ORIGIN
+
+
+def test_redact_config_value_preserves_credential_references() -> None:
+    value = {
+        "api_key_env_var": "SMART_API_KEY",
+        "extra_headers": {
+            "Authorization": "Bearer server-secret",
+            "X-Api-Key": "header-secret",
+            "User-Agent": "vibe-test",
+        },
+    }
+
+    redacted = redact_config_value(value)
+
+    assert redacted["api_key_env_var"] == "SMART_API_KEY"
+    assert redacted["extra_headers"] == {
+        "Authorization": REDACTED_VALUE,
+        "X-Api-Key": REDACTED_VALUE,
+        "User-Agent": "vibe-test",
+    }
+
+
+def test_build_field_wires_redacts_provider_headers_and_layers(
+    make_config: Callable[..., VibeConfigSchema],
+) -> None:
+    secret = "sentinel-provider-secret"
+    provider = ProviderConfig(
+        name="smart",
+        api_base="https://smart.example/v1",
+        api_key_env_var="SMART_API_KEY",
+        extra_headers={"Authorization": f"Bearer {secret}"},
+    )
+    config = make_config(providers=[provider])
+    layer_value = provider.model_dump(mode="json")
+    wires = build_field_wires(
+        config,
+        {"providers": [ConfigLayerValueWire(layer="user-toml", value=[layer_value])]},
+    )
+    providers = next(wire for wire in wires if wire.name == "providers")
+    serialized = providers.model_dump_json()
+
+    assert secret not in serialized
+    assert "SMART_API_KEY" in serialized
+    assert REDACTED_VALUE in serialized
 
 
 @pytest.mark.asyncio

@@ -3,10 +3,10 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 import fnmatch
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from vibe.core.agents.models import AgentType, BuiltinAgentName
-from vibe.core.subagents import TaskArgs, TaskResult
+from vibe.core.subagents import MIN_SUBAGENT_RESULT_MAX_CHARS, TaskArgs, TaskResult
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -24,6 +24,21 @@ from vibe.utils.tool_presentation import ToolEffectKind
 class TaskToolConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ASK
     allowlist: list[str] = Field(default=[BuiltinAgentName.EXPLORE])
+    max_result_chars: int = Field(
+        default=0,
+        ge=0,
+        description="Subagent response limit; zero uses the autonomy setting",
+    )
+
+    @field_validator("max_result_chars")
+    @classmethod
+    def validate_result_limit(cls, value: int) -> int:
+        if 0 < value < MIN_SUBAGENT_RESULT_MAX_CHARS:
+            raise ValueError(
+                f"max_result_chars must be zero or at least "
+                f"{MIN_SUBAGENT_RESULT_MAX_CHARS}"
+            )
+        return value
 
 
 class Task(
@@ -114,5 +129,7 @@ class Task(
         if ctx.subagent_runner is None:
             raise ToolError("Task tool requires a subagent runner in context")
 
-        async for event in ctx.subagent_runner.run(args, ctx):
+        async for event in ctx.subagent_runner.run(
+            args, ctx, max_result_chars=self.config.max_result_chars
+        ):
             yield event

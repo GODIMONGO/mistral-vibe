@@ -92,6 +92,7 @@ class TestAgentProfile:
             BuiltinAgentName.PLAN,
             BuiltinAgentName.ACCEPT_EDITS,
             BuiltinAgentName.AUTO_APPROVE,
+            BuiltinAgentName.AUTONOMOUS,
             BuiltinAgentName.LEAN,
         }
 
@@ -433,6 +434,7 @@ class TestAgentManagerCycling:
         assert BuiltinAgentName.AUTO_APPROVE in order
         assert BuiltinAgentName.PLAN in order
         assert BuiltinAgentName.ACCEPT_EDITS in order
+        assert BuiltinAgentName.AUTONOMOUS not in order
 
     def test_next_agent_cycles_through_all(
         self, make_config: Callable[..., VibeConfigSchema], backend: FakeBackend
@@ -795,7 +797,7 @@ class TestActConsumersUseAclosing:
         vibe_pkg = TESTS_ROOT.parent / "vibe"
         violations: list[str] = []
         for path in vibe_pkg.rglob("*.py"):
-            tree = ast.parse(path.read_text(), filename=str(path))
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.AsyncFor):
                     continue

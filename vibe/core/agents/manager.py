@@ -92,6 +92,18 @@ class AgentManager:
 
     def _install_profile(self, profile: AgentProfile) -> None:
         apply_profile_overrides(self._orchestrator, profile.overrides)
+        role_model = self._role_model_alias(profile)
+        if role_model:
+            apply_profile_overrides(self._orchestrator, {"active_model": role_model})
+
+    def _role_model_alias(self, profile: AgentProfile) -> str:
+        match profile.name:
+            case BuiltinAgentName.GOAL_ADVISOR:
+                return self.config.resolve_goal_advisor_model().alias
+            case BuiltinAgentName.REVIEWER:
+                return self.config.resolve_reviewer_model().alias
+            case _:
+                return ""
 
     def get_agent(self, name: str) -> AgentProfile:
         if agent := self.available_agents.get(name):
@@ -119,7 +131,7 @@ class AgentManager:
         primary_agents = [
             name
             for name, agent in self.available_agents.items()
-            if agent.agent_type == AgentType.AGENT
+            if agent.agent_type == AgentType.AGENT and agent.cycleable
         ]
         order = [name for name in builtin_order if name in primary_agents]
         custom = sorted(name for name in primary_agents if name not in builtin_order)

@@ -22,6 +22,7 @@ class Prompt(StrEnum):
 
 class SystemPrompt(Prompt):
     CLI = auto()
+    AUTONOMOUS = auto()
     EXPLORE = auto()
     TESTS = auto()
     LEAN = auto()

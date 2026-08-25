@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import enum
 from pathlib import Path
+import re
 from types import UnionType
 from typing import Any, Union, get_args, get_origin
 
@@ -18,6 +19,7 @@ from vibe.core.config.layer import ConfigLayer, ConfigLayerError, RawConfig
 from vibe.core.config.patch import escape_json_pointer_token
 
 DEFAULT_ORIGIN = "default"
+REDACTED_VALUE = "[redacted]"
 
 # Internal fields populated at runtime (not by the user) that should never be
 # rendered in the settings UI.
@@ -32,6 +34,7 @@ POPULAR_SETTINGS: frozenset[str] = frozenset({
     "active_model",
     "theme",
     "default_agent",
+    "autonomy",
     "mcp_servers",
     "auto_compact_threshold",
     "bypass_tool_permissions",
@@ -49,6 +52,48 @@ _SCALAR_KINDS: tuple[tuple[type, ConfigFieldKind], ...] = (
     (float, ConfigFieldKind.FLOAT),
     (str, ConfigFieldKind.STR),
 )
+
+_SAFE_CREDENTIAL_REFERENCE_KEYS = frozenset({
+    "api_key_env",
+    "api_key_env_var",
+    "api_key_header",
+    "api_key_format",
+})
+_SENSITIVE_KEY_PARTS = frozenset({
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "secret",
+    "token",
+})
+
+
+def _is_sensitive_key(key: object) -> bool:
+    if not isinstance(key, str):
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+    if normalized in _SAFE_CREDENTIAL_REFERENCE_KEYS:
+        return False
+    parts = frozenset(normalized.split("_"))
+    return bool(parts & _SENSITIVE_KEY_PARTS) or normalized in {
+        "api_key",
+        "apikey",
+        "x_api_key",
+    }
+
+
+def redact_config_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: REDACTED_VALUE if _is_sensitive_key(key) else redact_config_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_config_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_config_value(item) for item in value)
+    return value
 
 
 def classify_annotation(annotation: Any) -> tuple[ConfigFieldKind, tuple[str, ...]]:
@@ -91,7 +136,7 @@ async def collect_layer_values(
             continue
         for name, value in data.items():
             values.setdefault(name, []).append(
-                ConfigLayerValueWire(layer=layer.name, value=value)
+                ConfigLayerValueWire(layer=layer.name, value=redact_config_value(value))
             )
     return values
 
@@ -110,15 +155,18 @@ def build_field_wires(
         if name in HIDDEN_SETTINGS:
             continue
         kind, choices = classify_annotation(info.annotation)
-        values = list(layer_values.get(name, []))
+        values = [
+            entry.model_copy(update={"value": redact_config_value(entry.value)})
+            for entry in layer_values.get(name, [])
+        ]
         if not info.is_required() and not any(
             entry.layer == DEFAULT_ORIGIN for entry in values
         ):
             values.append(
                 ConfigLayerValueWire(
                     layer=DEFAULT_ORIGIN,
-                    value=to_jsonable_python(
-                        info.get_default(call_default_factory=True)
+                    value=redact_config_value(
+                        to_jsonable_python(info.get_default(call_default_factory=True))
                     ),
                 )
             )
@@ -127,7 +175,7 @@ def build_field_wires(
                 name=name,
                 kind=kind,
                 description=(info.description or "").strip(),
-                value=json_values.get(name),
+                value=redact_config_value(json_values.get(name)),
                 path=f"{path_prefix}/{escape_json_pointer_token(name)}",
                 popular=name in popular,
                 enum_choices=list(choices),

@@ -477,6 +477,7 @@ class AgentSummary(ProtocolModel):
     description: str
     safety: AgentSafety
     agent_type: AgentType
+    cycleable: bool = True
 
 
 class SkillSummary(ProtocolModel):

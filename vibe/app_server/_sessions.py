@@ -33,8 +33,10 @@ from vibe.app_server.protocol import (
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.session.saved_sessions import delete_saved_session
 from vibe.core.subagents import (
+    DEFAULT_SUBAGENT_RESULT_MAX_CHARS,
     SubagentRunAccumulator,
     SubagentRunnerPort,
+    SwarmResult,
     TaskArgs,
     TaskResult,
     prepare_subagent_prompt,
@@ -72,6 +74,14 @@ class SessionRuntime:
             raise BaseExceptionGroup("Failed to close session runtime", errors)
 
 
+@dataclass(frozen=True, slots=True)
+class _SwarmQueueItem:
+    index: int
+    event: ToolStreamEvent | None = None
+    result: TaskResult | None = None
+    terminal: bool = False
+
+
 class SessionRuntimeRegistry(SubagentRunnerPort):
     def __init__(
         self,
@@ -90,6 +100,7 @@ class SessionRuntimeRegistry(SubagentRunnerPort):
         self._children: dict[str, SessionRuntime] = {}
         self._child_links: dict[str, tuple[SessionRuntime, str]] = {}
         self._ensure_child_lock = asyncio.Lock()
+        self._child_cache_lock = asyncio.Lock()
 
     def bind_root(self, runtime: SessionRuntime) -> None:
         if self._root is not None:
@@ -136,6 +147,9 @@ class SessionRuntimeRegistry(SubagentRunnerPort):
                 return False
             self._children[child.session_id] = runtime
             self._child_links[child.session_id] = (parent_runtime, link.tool_call_id)
+            await self._trim_idle_children(
+                root_agent_loop, keep_session_id=child.session_id
+            )
         return True
 
     def _resolve_child_link(
@@ -289,12 +303,116 @@ class SessionRuntimeRegistry(SubagentRunnerPort):
         await self.close_children()
 
     async def run(
-        self, args: TaskArgs, ctx: InvokeContext
+        self, args: TaskArgs, ctx: InvokeContext, *, max_result_chars: int = 0
+    ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
+        async for event in self._run_child(
+            args,
+            ctx,
+            max_result_chars=self._result_char_budget(ctx, max_result_chars),
+            link_tool_call_id=ctx.tool_call_id,
+            project_parent=True,
+        ):
+            yield event
+
+    async def run_many(
+        self,
+        args: list[TaskArgs],
+        ctx: InvokeContext,
+        *,
+        max_parallel: int,
+        max_result_chars: int = 0,
+    ) -> AsyncGenerator[ToolStreamEvent | SwarmResult, None]:
+        if max_parallel <= 0:
+            raise ValueError("max_parallel must be positive")
+        result_chars = self._result_char_budget(ctx, max_result_chars)
+        queue = BoundedEventQueue[_SwarmQueueItem]()
+        semaphore = asyncio.Semaphore(max_parallel)
+
+        async def worker(index: int, task_args: TaskArgs) -> None:
+            result: TaskResult | None = None
+            try:
+                async with semaphore:
+                    async for event in self._run_child(
+                        task_args,
+                        ctx,
+                        max_result_chars=result_chars,
+                        link_tool_call_id=f"{ctx.tool_call_id}:swarm:{index}",
+                        project_parent=False,
+                    ):
+                        if isinstance(event, TaskResult):
+                            result = event
+                        else:
+                            await queue.put(_SwarmQueueItem(index=index, event=event))
+                if result is None:
+                    accumulator = SubagentRunAccumulator(max_chars=result_chars)
+                    accumulator.record_error("Subagent returned no result")
+                    result = accumulator.build_result(turns_used=0, completed=False)
+            except Exception as exc:
+                accumulator = SubagentRunAccumulator(max_chars=result_chars)
+                accumulator.record_error(str(exc))
+                result = accumulator.build_result(turns_used=0, completed=False)
+            finally:
+                current = asyncio.current_task()
+                if result is not None and (current is None or not current.cancelling()):
+                    await queue.put(
+                        _SwarmQueueItem(index=index, result=result, terminal=True)
+                    )
+
+        tasks = [
+            asyncio.create_task(
+                worker(index, task_args),
+                name=f"vibe-swarm-worker:{ctx.tool_call_id}:{index}",
+            )
+            for index, task_args in enumerate(args)
+        ]
+        results: list[TaskResult | None] = [None] * len(args)
+        completed = 0
+        try:
+            while completed < len(args):
+                item = await queue.get()
+                if item.terminal:
+                    results[item.index] = item.result
+                    completed += 1
+                    continue
+                if item.event is not None:
+                    task_args = args[item.index]
+                    yield item.event.model_copy(
+                        update={
+                            "tool_name": "swarm",
+                            "tool_call_id": ctx.tool_call_id,
+                            "message": (
+                                f"[{item.index + 1}:{task_args.agent}] "
+                                f"{item.event.message}"
+                            ),
+                        }
+                    )
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            for task in tasks:
+                with suppress(asyncio.CancelledError):
+                    await task
+
+        ordered_results = [result for result in results if result is not None]
+        yield SwarmResult(
+            results=ordered_results,
+            completed_count=sum(result.completed for result in ordered_results),
+        )
+
+    async def _run_child(  # noqa: PLR0915
+        self,
+        args: TaskArgs,
+        ctx: InvokeContext,
+        *,
+        max_result_chars: int,
+        link_tool_call_id: str,
+        project_parent: bool,
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
         parent = self._runtime(ctx.session_id)
         child = await self._runtime_factory.create_child(parent.agent_loop, args.agent)
         progress = BoundedEventQueue[ToolStreamEvent]()
-        accumulator = SubagentRunAccumulator()
+        accumulator = SubagentRunAccumulator(max_chars=max_result_chars)
 
         async def consume_event(event: BaseEvent) -> None:
             if update := accumulator.observe(event, tool_call_id=ctx.tool_call_id):
@@ -302,27 +420,31 @@ class SessionRuntimeRegistry(SubagentRunnerPort):
 
         runtime = self._build_child_runtime(child, event_sink=consume_event)
         self._children[child.session_id] = runtime
-        self._child_links[child.session_id] = (parent, ctx.tool_call_id)
+        self._child_links[child.session_id] = (parent, link_tool_call_id)
+        await self._trim_idle_children(
+            parent.agent_loop, keep_session_id=child.session_id
+        )
         link_recorded = False
         projection_started = False
         try:
             await child.persist_empty_session()
-            await parent.agent_loop.record_child_session(child, ctx.tool_call_id)
+            await parent.agent_loop.record_child_session(child, link_tool_call_id)
             link_recorded = True
-            projection_started = True
-            await parent.turns.link_subagent(ctx.tool_call_id, child.session_id)
+            if project_parent:
+                projection_started = True
+                await parent.turns.link_subagent(link_tool_call_id, child.session_id)
         except BaseException:
             self._children.pop(child.session_id, None)
             self._child_links.pop(child.session_id, None)
             if projection_started:
                 with suppress(Exception):
                     await parent.turns.unlink_subagent(
-                        ctx.tool_call_id, child.session_id
+                        link_tool_call_id, child.session_id
                     )
             if link_recorded:
                 with suppress(Exception):
                     await parent.agent_loop.forget_child_session(
-                        child.session_id, ctx.tool_call_id
+                        child.session_id, link_tool_call_id
                     )
             with suppress(Exception):
                 await runtime.close()
@@ -365,9 +487,59 @@ class SessionRuntimeRegistry(SubagentRunnerPort):
         if turn.error is not None:
             accumulator.record_error(turn.error.message)
         turns_used = sum(message.role is Role.assistant for message in child.messages)
+        await self._trim_idle_children(
+            parent.agent_loop, keep_session_id=child.session_id
+        )
         yield accumulator.build_result(
             turns_used=turns_used, completed=turn.status is PublicTurnStatus.COMPLETED
         )
+
+    async def _trim_idle_children(
+        self, root: AgentLoop, *, keep_session_id: str
+    ) -> None:
+        autonomy = root.config.autonomy
+        if not autonomy.enabled:
+            return
+        async with self._child_cache_lock:
+            excess = len(self._children) - autonomy.max_live_child_runtimes
+            if excess <= 0:
+                return
+            evicted: list[tuple[str, SessionRuntime]] = []
+            for session_id, runtime in self._children.items():
+                if excess <= 0:
+                    break
+                if session_id == keep_session_id:
+                    continue
+                if (
+                    runtime.turns.active_turn is not None
+                    or runtime.execution.active is not None
+                ):
+                    continue
+                evicted.append((session_id, runtime))
+                excess -= 1
+            for session_id, _runtime in evicted:
+                self._children.pop(session_id, None)
+                self._child_links.pop(session_id, None)
+            for session_id, runtime in evicted:
+                try:
+                    await runtime.close()
+                except BaseException as exc:
+                    logger.warning(
+                        "Failed to close evicted child runtime session_id=%s",
+                        session_id,
+                        exc_info=exc,
+                    )
+
+    @staticmethod
+    def _result_char_budget(ctx: InvokeContext, override: int) -> int:
+        if override > 0:
+            return override
+        config = ctx.agent_manager.config if ctx.agent_manager is not None else None
+        autonomy = getattr(config, "autonomy", None)
+        configured = getattr(autonomy, "max_subagent_result_chars", None)
+        if isinstance(configured, int) and configured > 0:
+            return configured
+        return DEFAULT_SUBAGENT_RESULT_MAX_CHARS
 
     def _build_child_runtime(
         self,

@@ -6,7 +6,13 @@ import keyring
 from pydantic import ValidationError
 import pytest
 
-from vibe.core.config import MissingAPIKeyError, ModelConfig, ProviderConfig
+from vibe.core.config import (
+    AutonomyAggressiveness,
+    AutonomyConfig,
+    MissingAPIKeyError,
+    ModelConfig,
+    ProviderConfig,
+)
 from vibe.core.config.vibe_schema import VibeConfigSchema
 
 _ROUTED_TEST_ALIAS = "target-testing-model-alias"
@@ -453,6 +459,157 @@ def test_check_api_key_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(keyring, "get_password", lambda service, username: None)
     with pytest.raises(MissingAPIKeyError):
         VibeConfigSchema()
+
+
+def test_autonomy_defaults() -> None:
+    autonomy = AutonomyConfig()
+
+    assert autonomy == AutonomyConfig(
+        enabled=False,
+        aggressiveness=AutonomyAggressiveness.MEDIUM,
+        goal_advisor_model="",
+        reviewer_model="",
+        max_review_retries=3,
+        max_parallel_subagents=4,
+        max_live_child_runtimes=8,
+        max_subagent_result_chars=32768,
+        require_worker=True,
+        require_review=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("aggressiveness", "parallel", "retries", "refresh_turns"),
+    [
+        (AutonomyAggressiveness.LOW, 1, 1, 32),
+        (AutonomyAggressiveness.MEDIUM, 2, 2, 16),
+        (AutonomyAggressiveness.HIGH, 4, 3, 10),
+        (AutonomyAggressiveness.MAX, 4, 3, 6),
+    ],
+)
+def test_autonomy_aggressiveness_controls_resource_policy(
+    aggressiveness: AutonomyAggressiveness,
+    parallel: int,
+    retries: int,
+    refresh_turns: int,
+) -> None:
+    autonomy = AutonomyConfig(aggressiveness=aggressiveness)
+
+    assert autonomy.effective_parallel_subagents == parallel
+    assert autonomy.effective_review_retries == retries
+    assert autonomy.context_refresh_turns == refresh_turns
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_review_retries", 0),
+        ("max_review_retries", 11),
+        ("max_parallel_subagents", 0),
+        ("max_parallel_subagents", 17),
+        ("max_live_child_runtimes", 0),
+        ("max_live_child_runtimes", 65),
+        ("max_subagent_result_chars", 1023),
+    ],
+)
+def test_autonomy_limits_are_validated(field: str, value: int) -> None:
+    with pytest.raises(ValidationError):
+        AutonomyConfig.model_validate({field: value})
+
+
+def test_autonomy_model_resolution_fallbacks() -> None:
+    models = [
+        ModelConfig(name="active-model", provider="mistral", alias="active"),
+        ModelConfig(name="advisor-model", provider="mistral", alias="advisor"),
+        ModelConfig(name="reviewer-model", provider="mistral", alias="reviewer"),
+    ]
+    config = VibeConfigSchema.model_validate(
+        {
+            "active_model": "active",
+            "models": models,
+            "autonomy": {"goal_advisor_model": "advisor"},
+        },
+        context={"require_api_key": False},
+    )
+
+    assert config.resolve_goal_advisor_model().alias == "advisor"
+    assert config.resolve_reviewer_model().alias == "advisor"
+
+    explicit_reviewer = config.model_copy(
+        update={
+            "autonomy": config.autonomy.model_copy(
+                update={"reviewer_model": "reviewer"}
+            )
+        }
+    )
+    assert explicit_reviewer.resolve_reviewer_model().alias == "reviewer"
+
+    active_fallback = VibeConfigSchema.model_validate(
+        {"active_model": "active", "models": models}, context={"require_api_key": False}
+    )
+    assert active_fallback.resolve_goal_advisor_model().alias == "active"
+    assert active_fallback.resolve_reviewer_model().alias == "active"
+
+
+@pytest.mark.parametrize(
+    ("autonomy", "message"),
+    [
+        ({"goal_advisor_model": "missing"}, "Goal advisor model 'missing'"),
+        ({"reviewer_model": "missing"}, "Reviewer model 'missing'"),
+    ],
+)
+def test_autonomy_rejects_unknown_model_aliases(
+    autonomy: dict[str, str], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        VibeConfigSchema.model_validate(
+            {"autonomy": autonomy}, context={"require_api_key": False}
+        )
+
+
+def test_autonomy_rejects_model_with_unknown_provider() -> None:
+    model = ModelConfig(name="advisor-model", provider="missing", alias="advisor")
+
+    with pytest.raises(ValidationError, match="Provider 'missing'"):
+        VibeConfigSchema.model_validate(
+            {"models": [model], "autonomy": {"goal_advisor_model": "advisor"}},
+            context={"require_api_key": False},
+        )
+
+
+def test_enabled_autonomy_requires_role_provider_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MISTRAL_API_KEY", "active-key")
+    monkeypatch.delenv("SMART_MODEL_API_KEY", raising=False)
+    monkeypatch.setattr(keyring, "get_password", lambda service, username: None)
+    providers = [
+        ProviderConfig(
+            name="mistral",
+            api_base="https://api.mistral.ai/v1",
+            api_key_env_var="MISTRAL_API_KEY",
+        ),
+        ProviderConfig(
+            name="smart",
+            api_base="https://smart.example/v1",
+            api_key_env_var="SMART_MODEL_API_KEY",
+        ),
+    ]
+    models = [
+        ModelConfig(name="active-model", provider="mistral", alias="active"),
+        ModelConfig(name="advisor-model", provider="smart", alias="advisor"),
+    ]
+
+    with pytest.raises(MissingAPIKeyError) as exc_info:
+        VibeConfigSchema.model_validate({
+            "active_model": "active",
+            "providers": providers,
+            "models": models,
+            "autonomy": AutonomyConfig(enabled=True, goal_advisor_model="advisor"),
+        })
+
+    assert exc_info.value.env_key == "SMART_MODEL_API_KEY"
+    assert exc_info.value.provider_name == "smart"
 
 
 def test_theme_is_preserved_for_the_client_to_interpret() -> None:

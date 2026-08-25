@@ -35,6 +35,8 @@ from vibe.core.config.layers.discovered import DiscoveredConfigLayer
 from vibe.core.config.layers.growthbook import GrowthbookLayer
 from vibe.core.config.models import (
     THINKING_LEVELS,
+    AutonomyAggressiveness,
+    AutonomyConfig,
     ConnectorConfig,
     ExperimentsConfig,
     MCPHttp,
@@ -126,6 +128,8 @@ __all__ = [
     "THINKING_LEVELS",
     "AddOperationPatch",
     "AgentProfileLayer",
+    "AutonomyAggressiveness",
+    "AutonomyConfig",
     "ConfigChangeCallback",
     "ConfigChangeEvent",
     "ConfigDefinitionError",

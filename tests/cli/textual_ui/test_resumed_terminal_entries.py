@@ -68,6 +68,7 @@ def _reasoning() -> PublicReasoningEntry:
         updated_at=2,
         generation_status=PublicEntryGenerationStatus.COMPLETED,
         text="The completed reasoning from the resumed session.",
+        status_text="Vibe decision · CONTINUE · run focused tests",
     )
 
 
@@ -126,7 +127,10 @@ async def test_resumed_completed_reasoning_starts_settled() -> None:
         assert not message._is_spinning
         assert message._spinner_timer is None
         assert _text(message._indicator_widget) == "⏵"
-        assert _text(message._status_text_widget) == "Thought"
+        assert (
+            _text(message._status_text_widget)
+            == "Vibe decision · CONTINUE · run focused tests"
+        )
         assert message._stream is None
 
 

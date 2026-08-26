@@ -9,6 +9,7 @@ from vibe.core.agents.models import (
     BUILTIN_AGENTS,
     EXPLORE,
     GOAL_ADVISOR,
+    PLAN,
     REVIEWER,
     WORKER,
     AgentSafety,
@@ -38,6 +39,7 @@ class TestAgentProfile:
         assert "grep" in enabled_tools
         assert "read_file" in enabled_tools
         assert "skill" in enabled_tools
+        assert "deep_wiki" in enabled_tools
 
     def test_builtin_agents_contains_explore(self) -> None:
         """Test that BUILTIN_AGENTS includes explore."""
@@ -72,11 +74,24 @@ class TestAgentProfile:
         for profile in (GOAL_ADVISOR, REVIEWER):
             assert profile.safety is AgentSafety.SAFE
             assert profile.overrides["enabled_tools"] == [
+                "deep_wiki",
                 "grep",
                 "read_file",
                 "skill",
                 "web_search",
             ]
+
+    def test_plan_profile_excludes_side_effect_tools(self) -> None:
+        enabled_tools = PLAN.overrides["enabled_tools"]
+        assert "bash" not in enabled_tools
+        assert "computer_use" not in enabled_tools
+        assert "chrome_cdp" not in enabled_tools
+        assert "memory" not in enabled_tools
+        assert "task" not in enabled_tools
+        assert {"grep", "read_file", "web_search", "exit_plan_mode"} <= set(
+            enabled_tools
+        )
+        assert "deep_wiki" in enabled_tools
 
     def test_worker_only_auto_approves_file_mutations(self) -> None:
         assert WORKER.safety is AgentSafety.DESTRUCTIVE
@@ -84,6 +99,7 @@ class TestAgentProfile:
         assert tools["edit"]["permission"] == "always"
         assert tools["write_file"]["permission"] == "always"
         assert "bash" in WORKER.overrides["enabled_tools"]
+        assert "deep_wiki" in WORKER.overrides["enabled_tools"]
 
 
 class TestAgentManager:
@@ -215,8 +231,10 @@ class TestAgentManager:
         )
 
         assert manager.config.get_active_model().alias == expected_alias
+        assert manager.config.get_active_model().thinking == "max"
         assert manager.config.system_prompt_id in {"advisor", "reviewer"}
         assert manager.config.enabled_tools == [
+            "deep_wiki",
             "grep",
             "read_file",
             "skill",

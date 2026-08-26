@@ -25,18 +25,6 @@ _MAX_TASK_LABEL_CHARS = 64
 _MAX_DISMISSED_PLANS = 100
 _CACHE_SECTION = "task_status"
 _DISMISSED_PLANS_KEY = "dismissed_plans"
-_CLEAR_TASK_REQUESTS = frozenset({
-    "clear all tasks",
-    "clear tasks",
-    "remove all tasks",
-    "remove tasks",
-    "очисти все задачи",
-    "очисти задачи",
-    "убери все задачи",
-    "убери задачи",
-    "удали все задачи",
-    "удали задачи",
-})
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +61,22 @@ def _summarize(labels: tuple[str, ...]) -> str:
     return f"{summary} · +{omitted}" if omitted else summary
 
 
+def _plain_state(state: TaskStatusState) -> str:
+    if state.total == 0:
+        return "No active task plan."
+    lines = [f"Tasks {len(state.completed)}/{state.total} done"]
+    categories = (
+        ("Working", state.in_progress),
+        ("Done", state.completed),
+        ("Waiting", state.pending),
+        ("Cancelled", state.cancelled),
+    )
+    lines.extend(
+        f"{label}: {_summarize(items)}" for label, items in categories if items
+    )
+    return "\n".join(lines)
+
+
 def _state_from_todos(todos: list[TodoEffectItem]) -> TaskStatusState:
     groups: dict[TodoEffectStatus, list[str]] = {
         status: [] for status in TodoEffectStatus
@@ -97,11 +101,6 @@ def _todos_from_entry(entry: PublicEffectEntry) -> list[TodoEffectItem] | None:
         return TodoEffectOutput.model_validate(entry.state.output).todos
     except ValidationError:
         return todos
-
-
-def is_task_clear_request(value: str) -> bool:
-    normalized = " ".join(value.casefold().strip(" .!?\t\r\n").split())
-    return normalized in _CLEAR_TASK_REQUESTS
 
 
 def _dismissed_plans(data: dict[str, Any]) -> dict[str, str]:
@@ -181,6 +180,10 @@ class TaskStatusBar(Static):
             return
         self.update(self._render_state(state))
 
+    def plain_status(self) -> str:
+        """Return the current plan status for the `/tasks` command."""
+        return _plain_state(self.state)
+
     @staticmethod
     def _render_state(state: TaskStatusState) -> Content:
         lines = [
@@ -201,4 +204,4 @@ class TaskStatusBar(Static):
         return Content("\n").join(lines)
 
 
-__all__ = ["TaskStatusBar", "TaskStatusState", "is_task_clear_request"]
+__all__ = ["TaskStatusBar", "TaskStatusState"]

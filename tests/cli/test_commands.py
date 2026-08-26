@@ -215,6 +215,7 @@ class TestCommandRegistry:
         ("text", "name", "handler"),
         [
             ("/effort max", "effort", "_effort_command"),
+            ("/boost verify it", "boost", "_boost_command"),
             ("/subagents", "subagents", "_show_subagents"),
             ("/tasks clear", "tasks", "_tasks_command"),
             ("/ultracode fix it", "ultracode", "_ultracode_command"),
@@ -223,6 +224,7 @@ class TestCommandRegistry:
             ("/web ship app", "web", "_web_command"),
             ("/memory remember this", "memory", "_memory_command"),
             ("/telegram status", "telegram", "_telegram_command"),
+            ("/harness", "harness", "_show_harness"),
         ],
     )
     def test_autonomy_feature_commands_are_registered(
@@ -250,6 +252,17 @@ class TestCommandRegistry:
         assert cmd.handler == "_show_api_key"
         assert cmd.side_channel is True
         assert cmd_args == "advisor-smart"
+
+    def test_opencode_go_command_registration(self) -> None:
+        registry = CommandRegistry()
+        result = registry.parse_command("/opencode-go")
+
+        assert result is not None
+        cmd_name, cmd, cmd_args = result
+        assert cmd_name == "opencode-go"
+        assert cmd.handler == "_opencode_go_command"
+        assert cmd.side_channel is True
+        assert cmd_args == ""
 
     def test_exit_command_accepts_bare_synonyms(self) -> None:
         registry = CommandRegistry()

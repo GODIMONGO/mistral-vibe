@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Iterable
+from pathlib import Path
 import time
+from typing import cast
 
 import pytest
 
@@ -8,6 +12,7 @@ from tests.conftest import build_test_agent_loop
 from tests.stubs.app_server import create_test_app_server_session
 from vibe.app_server._projection import project_history
 from vibe.app_server._session_resources import ShellTimelineEvent
+from vibe.app_server._shell import ShellController
 from vibe.app_server._shell_requests import _manual_shell_context
 from vibe.app_server.events import HistoryEntryAdded, HistoryEntryUpdated
 from vibe.app_server.models import (
@@ -18,6 +23,38 @@ from vibe.app_server.models import (
 from vibe.app_server.protocol import ShellRunResponse
 from vibe.core.types import Role
 from vibe.utils.tool_presentation import ToolEffectKind
+
+
+class _ChunkedStream:
+    def __init__(self, chunks: Iterable[bytes]) -> None:
+        self._chunks = iter([*chunks, b""])
+
+    async def read(self, _size: int) -> bytes:
+        return next(self._chunks)
+
+
+async def _decode_stream(chunks: list[bytes], *, encoding: str) -> str:
+    parts: list[str] = []
+    await ShellController(Path("/workspace"))._read_stream(
+        cast(asyncio.StreamReader, _ChunkedStream(chunks)),
+        parts,
+        None,
+        encoding=encoding,
+    )
+    return "".join(parts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["utf-8", "cp866"])
+async def test_shell_stream_decoder_preserves_unicode_across_every_chunk_boundary(
+    encoding: str,
+) -> None:
+    expected = "Привет, мир"
+    raw = expected.encode(encoding)
+
+    for split in range(len(raw) + 1):
+        chunks = [chunk for chunk in (raw[:split], raw[split:]) if chunk]
+        assert await _decode_stream(chunks, encoding=encoding) == expected
 
 
 def _final_effect(events: list[ShellTimelineEvent]) -> PublicEffectEntry:

@@ -12,6 +12,7 @@ from vibe.cli.textual_ui.app import BottomApp
 from vibe.cli.textual_ui.widgets.api_key_app import ApiKeyApp
 from vibe.cli.textual_ui.widgets.messages import ErrorMessage
 from vibe.core.config import ModelConfig
+from vibe.opencode_go import OPENCODE_GO_RECOMMENDED_REVIEW_MODEL
 
 
 def _config():
@@ -151,3 +152,56 @@ async def test_api_key_save_waits_for_idle_without_putting_secret_in_queue_text(
             with suppress(asyncio.CancelledError):
                 await blocker
             app._agent_task = None
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_connects_roles_without_switching_main() -> None:
+    config = build_test_vibe_config(
+        models=[
+            *_config().models.values(),
+            ModelConfig(
+                name="deepseek-v4-flash",
+                provider="mistral",
+                alias=OPENCODE_GO_RECOMMENDED_REVIEW_MODEL,
+                display_name="DeepSeek V4 Flash (OpenCode Go)",
+            ),
+        ],
+        active_model="alpha",
+    )
+    app = build_test_vibe_app(config=config)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+
+        handled = await app._handle_command("/opencode-go")
+        await pilot.pause(0.2)
+        input_widget = app.query_one("#apikey-input", Input)
+        assert handled
+        assert input_widget.password is True
+
+        input_widget.value = "go-secret"
+        with (
+            patch.object(
+                app.app_server.resources.config,
+                "write_api_key",
+                new=AsyncMock(return_value=0),
+            ) as write_api_key,
+            patch.object(
+                app.app_server.resources.config,
+                "configure_opencode_go",
+                new=AsyncMock(),
+            ) as configure_opencode_go,
+        ):
+            await pilot.press("enter")
+            await pilot.pause(0.3)
+
+        write_api_key.assert_awaited_once_with(
+            OPENCODE_GO_RECOMMENDED_REVIEW_MODEL, "go-secret"
+        )
+        configure_opencode_go.assert_awaited_once_with(
+            OPENCODE_GO_RECOMMENDED_REVIEW_MODEL
+        )
+        assert app.config.active_model.alias == "alpha"
+        assert all(
+            "go-secret" not in str(getattr(widget, "renderable", ""))
+            for widget in app.query(Static)
+        )

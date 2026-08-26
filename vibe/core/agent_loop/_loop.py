@@ -12,6 +12,7 @@ import inspect
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import threading
 from threading import Thread
@@ -21,19 +22,23 @@ from uuid import uuid4
 
 from pydantic import BaseModel, JsonValue, ValidationError
 
+from vibe.config_values import WebSearchActivity
 from vibe.core.agent_loop._request_broker import InteractionRequestBroker
 from vibe.core.agent_loop_hooks import AgentLoopHooksMixin, PostToolFinalization
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
 from vibe.core.autocompletion.path_prompt import build_path_prompt_payload
 from vibe.core.autonomy import (
+    AUTONOMY_PLAN_END,
+    AUTONOMY_PLAN_START,
     AutonomyCoordinator,
     AutonomyDecisionKind,
+    AutonomyIntent,
     AutonomyPlan,
     AutonomyPlanTask,
     AutonomyPolicy,
     parse_advisor_plan,
-    should_skip_autonomy,
+    parse_autonomy_intent,
 )
 from vibe.core.checkpoints import Checkpointer, CheckpointRecorder, FileStore
 from vibe.core.compaction import (
@@ -45,19 +50,46 @@ from vibe.core.compaction.context import (
     render_teleport_summary_request,
     select_model_context,
 )
-from vibe.core.config import ModelConfig, ProviderConfig, VibeConfigSchema
+from vibe.core.config import (
+    ModelConfig,
+    ProviderConfig,
+    ThinkingLevel,
+    VibeConfigSchema,
+)
 from vibe.core.config.harness_files import (
     HarnessFilesManager,
     get_harness_files_manager,
 )
 from vibe.core.config.layers.growthbook import GrowthbookLayer
 from vibe.core.config.orchestrator import ConfigOrchestrator
+from vibe.core.execution_budget import (
+    ExecutionBudgetTracker,
+    ExecutionProfile,
+    TaskScale,
+    classify_task,
+    execution_profile,
+    requires_autonomous_pipeline,
+)
+from vibe.core.experience import (
+    ExperienceStore,
+    ExperienceStoreError,
+    project_experience_key,
+    render_experience_context,
+    sanitize_experience_text,
+)
 from vibe.core.experiments import ExperimentManager
 from vibe.core.experiments.client import RemoteEvalClient
 from vibe.core.experiments.models import EvalResponse
 from vibe.core.experiments.session import (
     hydrate_experiments_from_session as session_hydrate_experiments_from_session,
     initialize_experiments as session_initialize_experiments,
+)
+from vibe.core.harness import (
+    HarnessDecision,
+    HarnessPhase,
+    HarnessPlugin,
+    HarnessRuntime,
+    create_default_harness,
 )
 from vibe.core.hooks.config import load_hooks_from_fs
 from vibe.core.hooks.manager import HooksManager
@@ -73,12 +105,20 @@ from vibe.core.llm.format import (
     ResolvedToolCall,
 )
 from vibe.core.llm.types import BackendLike
+from vibe.core.memory import (
+    GlobalMemoryStore,
+    MemoryStoreError,
+    build_working_memory_message,
+    is_working_memory_message,
+    load_working_memory,
+)
 from vibe.core.middleware import (
     PLAN_AGENT_EXIT,
     AutoCompactMiddleware,
     AutonomyRefreshMiddleware,
     ContextWarningMiddleware,
     ConversationContext,
+    ExecutionBudgetMiddleware,
     MiddlewareAction,
     MiddlewarePipeline,
     MiddlewareResult,
@@ -90,6 +130,7 @@ from vibe.core.middleware import (
     make_plan_agent_reminder,
 )
 from vibe.core.plan_session import PlanSession
+from vibe.core.prompts import UtilityPrompt
 from vibe.core.review import ReviewManager
 from vibe.core.rewind import RewindManager
 from vibe.core.scratchpad import cleanup_scratchpad, init_scratchpad
@@ -136,6 +177,7 @@ from vibe.core.tools.builtins.skill import (
     skill_content_marker,
 )
 from vibe.core.tools.builtins.todo import TodoArgs, TodoItem, TodoResult, TodoStatus
+from vibe.core.tools.builtins.web_search import WebSearchArgs
 from vibe.core.tools.io_port import ToolIOPort
 from vibe.core.tools.manager import NoSuchToolError, ToolManager
 from vibe.core.tools.permissions import (
@@ -171,6 +213,7 @@ from vibe.core.types import (
     LLMMessage,
     LLMUsage,
     ManualShellContext,
+    MemoryStatusEvent,
     MessageList,
     PersistedToolResult,
     PlanReviewEndedEvent,
@@ -202,10 +245,13 @@ from vibe.core.utils import (
 from vibe.observability.logging import log_model_call_success, logger
 from vibe.setup.auth.whoami import WhoAmICache
 from vibe.user_content import UserDisplayContent, UserResource
+
+_EXPERIENCE_QUERY_MESSAGE_LIMIT = 4
 from vibe.utils import VIBE_WARNING_TAG
 from vibe.utils.api_keys import resolve_api_key
 from vibe.utils.cache_store import CacheStore, InMemoryCacheStore
 from vibe.utils.http import get_server_url_from_api_base, get_user_agent
+from vibe.utils.tool_presentation import ToolEffectKind
 
 _AUTONOMY_OBJECTIVE_MAX_CHARS = 6_000
 _AUTONOMY_REVIEW_EVIDENCE_MAX_CHARS = 8_000
@@ -213,6 +259,138 @@ _AUTONOMY_DEPENDENCY_RESULT_MAX_CHARS = 2_000
 _AUTONOMY_DEPENDENCY_CONTEXT_MAX_CHARS = 6_000
 _AUTONOMY_STORED_RESULT_MAX_CHARS = 4_000
 _AUTONOMY_TASK_PASS_MARKER = "TASK_RESULT: PASS"
+_ADVISOR_FALLBACK_MAX_TOKENS = 4_096
+_LOCAL_OR_SENSITIVE_SEARCH_RE = re.compile(
+    r"(?:\b(?:codex|file|vscode)://|"
+    r"(?:^|[\s\"'`(])(?:[a-z]:[\\/]|\\\\)|"
+    r"\b(?:localhost|127\.0\.0\.1)(?::\d{2,5})?\b|"
+    r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}\b|"
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----|"
+    r"\b(?:api[ _-]?key|password|passwd|secret|access[ _-]?token|"
+    r"refresh[ _-]?token|authorization)\b[\"']?\s*[:=]\s*[\"']?\S+|"
+    r"\bBearer\s+[A-Za-z0-9._~+/=-]{12,}|"
+    r"\b\d{8,12}:AA[A-Za-z0-9_-]{20,})",
+    re.IGNORECASE,
+)
+_PERFORMANCE_MUTATION_EFFECTS = frozenset({
+    ToolEffectKind.FILE_EDIT,
+    ToolEffectKind.FILE_WRITE,
+    ToolEffectKind.SHELL,
+    ToolEffectKind.WORKTREE,
+})
+_VIBE_DELIBERATION_MAX_TOKENS: dict[ThinkingLevel, int] = {
+    "off": 0,
+    "low": 512,
+    "medium": 640,
+    "high": 768,
+    "max": 896,
+}
+_VIBE_DELIBERATION_SYNTHESIS_MAX_TOKENS: dict[ThinkingLevel, int] = {
+    "off": 0,
+    "low": 512,
+    "medium": 640,
+    "high": 768,
+    "max": 896,
+}
+_VIBE_DELIBERATION_CONTEXT_MAX_CHARS: dict[ThinkingLevel, int] = {
+    "off": 0,
+    "low": 4_000,
+    "medium": 6_000,
+    "high": 9_000,
+    "max": 12_000,
+}
+_VIBE_DELIBERATION_MESSAGE_MAX_CHARS = 2_400
+_VIBE_DELIBERATION_MEMORY_SHARE = 4
+_VIBE_FULL_THINKING_INTERVAL = 10
+_VIBE_FAST_THINKING_MAX_TOKENS = 192
+_VIBE_DELIBERATION_LENSES = {
+    1: ("strategy challenge",),
+    2: ("direction audit", "alternative search"),
+    3: ("direction audit", "alternative search", "adversarial decision"),
+    4: (
+        "direction audit",
+        "alternative search",
+        "failure rehearsal",
+        "constraint-first design",
+    ),
+}
+_VIBE_DELIBERATION_TASKS = {
+    "strategy challenge": (
+        "Restate the real outcome, expose the weakest assumption, generate two "
+        "materially different routes, and choose continue, pivot, or clarify."
+    ),
+    "direction audit": (
+        "Judge whether the current path serves the user's real outcome. Identify "
+        "fixation, unsupported assumptions, and evidence that would falsify it."
+    ),
+    "alternative search": (
+        "Construct at least two genuinely different approaches, including a simpler "
+        "or safer one, and compare their costs, risks, and information value."
+    ),
+    "failure rehearsal": (
+        "Assume the current plan failed. Work backward to the likely cause, detect "
+        "the earliest warning sign, and define a reversible escape route."
+    ),
+    "adversarial decision": (
+        "Attack the leading approach using the strongest alternative, then choose "
+        "continue, pivot, or clarify and name the decisive evidence."
+    ),
+    "constraint-first design": (
+        "Ignore the leading route and derive a solution from the user's constraints, "
+        "available evidence, reversibility, and the cheapest decisive verification."
+    ),
+}
+_VISIBLE_THINKING_STATUS_CHARS = 120
+
+
+def _operational_brief_fields(content: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for raw_line in content.splitlines():
+        line = raw_line.strip().lstrip("-*# ").strip("` ")
+        key, separator, value = line.partition(":")
+        normalized_key = key.strip("` ").upper()
+        if not separator or not normalized_key or not value.strip():
+            continue
+        if not normalized_key.replace(" ", "").isalpha():
+            continue
+        fields.setdefault(
+            normalized_key, sanitize_experience_text(value.strip("` "), limit=320)
+        )
+    return fields
+
+
+def _visible_thinking_summary(
+    title: str, brief: str, field_labels: tuple[tuple[str, str], ...]
+) -> tuple[str, str]:
+    fields = _operational_brief_fields(brief)
+    selected = [
+        (label, fields[field]) for field, label in field_labels if field in fields
+    ]
+    if not selected:
+        return "", f"{title} · result ready"
+
+    content = "\n".join([
+        f"\n**{title}**",
+        *(f"- **{label}:** {value}" for label, value in selected),
+        "",
+    ])
+    direction = fields.get("DIRECTION")
+    focus = next(
+        (
+            fields[field]
+            for field in ("NEXT ACTION", "NEXT", "GAP", "PLAN", "DECISION")
+            if field in fields
+        ),
+        selected[0][1],
+    )
+    status_parts = [title]
+    if direction:
+        status_parts.append(direction)
+    status_parts.append(focus)
+    status = " · ".join(status_parts)
+    return content, sanitize_experience_text(
+        status, limit=_VISIBLE_THINKING_STATUS_CHARS
+    )
 
 
 def _compact_autonomy_text(content: str, max_chars: int, label: str) -> str:
@@ -225,6 +403,18 @@ def _compact_autonomy_text(content: str, max_chars: int, label: str) -> str:
     head_chars = available * 2 // 3
     tail_chars = available - head_chars
     return content[:head_chars] + marker + content[-tail_chars:]
+
+
+def _extract_tagged_text(content: str, tag: str) -> str:
+    opening = f"<{tag}>"
+    closing = f"</{tag}>"
+    start = content.find(opening)
+    if start < 0:
+        return ""
+    end = content.find(closing, start + len(opening))
+    if end < 0:
+        return ""
+    return content[start : end + len(closing)]
 
 
 def _is_git_executable_available() -> bool:
@@ -406,9 +596,12 @@ def _should_raise_rate_limit_error(e: Exception) -> bool:
 
 def _is_context_too_long_error(e: Exception) -> bool:
     if isinstance(e, BackendError):
-        return e.is_context_too_long
+        return e.is_context_too_long or e.is_large_payload_transport_error
     if isinstance(e, RuntimeError) and isinstance(e.__cause__, BackendError):
-        return e.__cause__.is_context_too_long
+        return (
+            e.__cause__.is_context_too_long
+            or e.__cause__.is_large_payload_transport_error
+        )
     return False
 
 
@@ -494,6 +687,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         session_id: str | None = None,
         session_dir: Path | None = None,
         session_lease: SessionLease | None = None,
+        harness_plugins: Sequence[HarnessPlugin] = (),
     ) -> None:
         self.cwd = (cwd or Path.cwd()).resolve()
         self.harness_files = replace(
@@ -505,6 +699,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._headless = headless
         self._is_subagent = is_subagent
         self.cache_store = cache_store or InMemoryCacheStore()
+        self.harness: HarnessRuntime = create_default_harness(harness_plugins)
 
         self._defer_heavy_init = defer_heavy_init
         self._deferred_init_thread: threading.Thread | None = None
@@ -599,6 +794,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         self.stats = AgentStats()
         self._tool_event_queue: asyncio.Queue[BaseEvent | None] | None = None
+        self._pending_working_memory_records: list[
+            tuple[str, str, Literal["success", "failure", "skipped"], str]
+        ] = []
         self._request_broker = InteractionRequestBroker()
         self._active_turn: _ActiveTurn | None = None
         self.launch_context = launch_context
@@ -628,6 +826,16 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._automatic_wave_progressed: bool = False
         self._pending_injected_messages: list[LLMMessage] = []
         self._pending_clear_context: bool = False
+        self._active_vibe_deliberation_message: LLMMessage | None = None
+        self._active_experience_message: LLMMessage | None = None
+        self._experience_context_fresh: bool = False
+        self._experience_status_reported: bool = False
+        self._experience_store = ExperienceStore()
+        self._automatic_web_queries: set[str] = set()
+        self._vibe_turns_since_full: int = _VIBE_FULL_THINKING_INTERVAL
+        self._global_memory_status_reported: bool = False
+        self._execution_profile: ExecutionProfile | None = None
+        self._execution_budget: ExecutionBudgetTracker | None = None
 
         self.telemetry_client = TelemetryClient(
             config_getter=lambda: self.config,
@@ -1082,6 +1290,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._session_lease = None
         if lease is not None:
             await asyncio.to_thread(lease.release)
+        self.harness.close()
 
     def _create_connector_registry(self) -> ConnectorRegistry | None:
         # Runs during __init__ before agent_manager exists, so read the
@@ -1648,6 +1857,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if self._max_session_tokens is not None:
             self.middleware_pipeline.add(TokenLimitMiddleware(self._max_session_tokens))
 
+        self.middleware_pipeline.add(
+            ExecutionBudgetMiddleware(lambda: self._execution_budget)
+        )
         self.middleware_pipeline.add(AutoCompactMiddleware())
         if self.config.autonomy.enabled:
             self.middleware_pipeline.add(
@@ -1703,6 +1915,14 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         old_parent_session_id = self.parent_session_id
         tool_call_id = str(uuid4())
 
+        compaction_start = await self._run_harness_phase(
+            HarnessPhase.COMPACTION,
+            self._autonomy_objective or "compact session context",
+            metadata={"state": "start", "context_tokens": old_tokens},
+        )
+        if compaction_start.stop_reason is not None:
+            raise RuntimeError(compaction_start.stop_reason)
+
         yield CompactStartEvent(
             tool_call_id=tool_call_id,
             current_context_tokens=old_tokens,
@@ -1733,6 +1953,14 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             old_session_id=old_session_id,
             new_session_id=self.session_id,
         )
+        compaction_end = await self._run_harness_phase(
+            HarnessPhase.COMPACTION,
+            self._autonomy_objective or "compact session context",
+            outcome="success",
+            metadata={"state": "end", "summary_length": len(summary)},
+        )
+        if compaction_end.stop_reason is not None:
+            raise RuntimeError(compaction_end.stop_reason)
 
     @property
     def user_plan(self) -> str | None:
@@ -1757,17 +1985,22 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if self._is_subagent or not self.config.autonomy.enabled:
             return None
         autonomy = self.config.autonomy
+        review_retries = autonomy.effective_review_retries
+        if self._execution_profile is not None:
+            review_retries = min(
+                review_retries, self._execution_profile.max_review_retries
+            )
         coordinator = AutonomyCoordinator(
             AutonomyPolicy(
-                max_retries=autonomy.effective_review_retries,
-                require_worker=autonomy.require_worker,
-                require_review=autonomy.require_review,
+                max_retries=review_retries,
+                require_worker=autonomy.require_worker or autonomy.boost_mode,
+                require_review=autonomy.require_review or autonomy.boost_mode,
             )
         )
         coordinator.start_turn()
         return coordinator
 
-    def _prepare_autonomy_turn(
+    async def _prepare_autonomy_turn(
         self, *, injected: bool, objective: str
     ) -> AutonomyCoordinator | None:
         self._reactive_recovery_used = False
@@ -1775,11 +2008,462 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if injected and self._autonomy_coordinator is not None:
             return self._autonomy_coordinator
         self._autonomy_evidence = []
-        if should_skip_autonomy(objective):
+        if self._is_subagent or not self.config.autonomy.enabled:
             self._autonomy_coordinator = None
             return None
+        if self.config.autonomy.gauntlet_loop and not self.config.autonomy.boost_mode:
+            self._autonomy_coordinator = self._new_autonomy_coordinator()
+            return self._autonomy_coordinator
+        intent = await self._analyze_autonomy_intent(objective)
+        locally_substantive = requires_autonomous_pipeline(objective)
+        if intent is AutonomyIntent.DIRECT and not locally_substantive:
+            self._autonomy_coordinator = None
+            return None
+        if (
+            self._execution_profile is not None
+            and self._execution_profile.max_parallel_subagents == 0
+        ):
+            self._execution_profile = execution_profile(TaskScale.MEDIUM)
+            self._execution_budget = ExecutionBudgetTracker(
+                self._execution_profile,
+                initial_tokens=self.stats.session_total_llm_tokens,
+            )
         self._autonomy_coordinator = self._new_autonomy_coordinator()
         return self._autonomy_coordinator
+
+    async def _analyze_autonomy_intent(self, objective: str) -> AutonomyIntent:
+        """Let the active model decide whether advisor orchestration is useful."""
+        intent_prompt = UtilityPrompt.AUTONOMY_INTENT.read()
+        if self.config.autonomy.boost_mode:
+            intent_prompt += (
+                "\nBOOST is enabled. Classify every implementation, investigation, "
+                "research, browser/computer action, or multi-step request as "
+                "AUTONOMOUS. Reserve DIRECT only for genuinely trivial interactions."
+            )
+        messages = [
+            LLMMessage(role=Role.system, content=intent_prompt),
+            LLMMessage(role=Role.user, content=objective),
+        ]
+        try:
+            result = await self._complete(
+                model=self.config.get_active_model(),
+                messages=messages,
+                tools=[],
+                tool_choice=None,
+                call_type="secondary_call",
+                max_tokens=16,
+            )
+        except Exception:
+            logger.warning(
+                "Autonomy intent analysis failed; continuing without advisor",
+                exc_info=True,
+            )
+            return AutonomyIntent.DIRECT
+        intent = parse_autonomy_intent(result.message.content or "")
+        if intent is None:
+            logger.warning(
+                "Invalid autonomy intent response %r; continuing without advisor",
+                result.message.content,
+            )
+            return AutonomyIntent.DIRECT
+        return intent
+
+    def _vibe_deliberation_context(
+        self, objective: str, *, thinking: ThinkingLevel
+    ) -> str:
+        max_chars = _VIBE_DELIBERATION_CONTEXT_MAX_CHARS[thinking]
+        memory_max_chars = max_chars // _VIBE_DELIBERATION_MEMORY_SHARE
+        working_memory = next(
+            (
+                _compact_autonomy_text(
+                    message.content or "", memory_max_chars, "older fast-memory entries"
+                )
+                for message in reversed(self.messages)
+                if is_working_memory_message(message)
+            ),
+            "",
+        )
+        global_memory = next(
+            (
+                _compact_autonomy_text(
+                    tagged, memory_max_chars, "older global-memory entries"
+                )
+                for message in reversed(self.messages)
+                if message.role is Role.system
+                and (
+                    tagged := _extract_tagged_text(
+                        message.content or "", "global_memory"
+                    )
+                )
+            ),
+            "",
+        )
+        recent_messages: list[str] = []
+        used = len(working_memory) + len(global_memory)
+        for message in reversed(self.messages):
+            content = message.content or ""
+            if (
+                message.role is Role.system
+                or not content
+                or "<vibe_deliberation>" in content
+            ):
+                continue
+            bounded = _compact_autonomy_text(
+                content,
+                min(_VIBE_DELIBERATION_MESSAGE_MAX_CHARS, max_chars),
+                f"older {message.role.value} content",
+            )
+            rendered = f"{message.role.value}: {bounded}"
+            if recent_messages and used + len(rendered) > max_chars:
+                break
+            recent_messages.append(rendered)
+            used += len(rendered)
+        recent_messages.reverse()
+        sections = []
+        if working_memory:
+            sections.append(
+                "FAST WORKING MEMORY (status/digests only; use it to avoid repeated "
+                f"actions):\n{working_memory}"
+            )
+        if global_memory:
+            sections.append(
+                "SLOW GLOBAL MEMORY (potentially stale; verify before use):\n"
+                f"{global_memory}"
+            )
+        if recent_messages:
+            sections.append("RECENT EVIDENCE:\n" + "\n\n".join(recent_messages))
+        context = "\n\n".join(sections)
+        if not context:
+            context = f"user: {objective}"
+        return _compact_autonomy_text(context, max_chars, "deliberation evidence")
+
+    def _clear_vibe_deliberation(self) -> None:
+        if self._active_vibe_deliberation_message is None:
+            return
+        self.messages.discard(self._active_vibe_deliberation_message)
+        self._active_vibe_deliberation_message = None
+
+    async def _synthesize_vibe_candidates(
+        self,
+        objective: str,
+        bounded_context: str,
+        candidates: list[tuple[str, str]],
+        thinking: ThinkingLevel,
+    ) -> str:
+        candidate_text = "\n\n".join(
+            f'<candidate lens="{lens}">\n{candidate}\n</candidate>'
+            for lens, candidate in candidates
+        )
+        synthesis_prompt = (
+            "Original user objective:\n"
+            f"{objective}\n\n"
+            "Bounded evidence and fast-memory ledger:\n"
+            f"{bounded_context}\n\n"
+            "Independent candidate briefs:\n"
+            f"{candidate_text}"
+        )
+        synthesis_model = self.config.get_compaction_model().model_copy(
+            update={"thinking": "off"}
+        )
+        try:
+            synthesis = await self._complete(
+                model=synthesis_model,
+                messages=[
+                    LLMMessage(
+                        role=Role.system,
+                        content=UtilityPrompt.VIBE_DELIBERATION_SYNTHESIS.read(),
+                    ),
+                    LLMMessage(role=Role.user, content=synthesis_prompt),
+                ],
+                tools=[],
+                tool_choice=None,
+                call_type="secondary_call",
+                max_tokens=_VIBE_DELIBERATION_SYNTHESIS_MAX_TOKENS[thinking],
+            )
+        except Exception:
+            logger.warning("Vibe deliberation synthesis failed", exc_info=True)
+            return candidates[-1][1]
+        return (synthesis.message.content or "").strip() or candidates[-1][1]
+
+    async def _run_full_vibe_deliberation(
+        self, objective: str
+    ) -> AsyncGenerator[BaseEvent, None]:
+        passes = self.config.autonomy.vibe_thinking_passes
+        if (
+            self._is_subagent
+            or passes == 0
+            or (
+                self.config.autonomy.boost_mode
+                and self._is_trivial_direct_request(objective)
+            )
+        ):
+            return
+
+        self._vibe_turns_since_full = 0
+        self._clear_vibe_deliberation()
+        thinking = self.config.autonomy.vibe_thinking
+        bounded_context = self._vibe_deliberation_context(objective, thinking=thinking)
+        deliberation_model = self.config.get_active_model().model_copy(
+            update={"thinking": thinking}
+        )
+        reasoning_message_id = f"vibe-thinking-{uuid4()}"
+        lenses = _VIBE_DELIBERATION_LENSES[passes]
+        candidates: list[tuple[str, str]] = []
+        for pass_index, lens in enumerate(lenses, start=1):
+            yield ReasoningEvent(
+                content=f"Vibe thinking: {lens} {pass_index}/{passes}\n",
+                message_id=reasoning_message_id,
+                status_text=f"Vibe thinking {pass_index}/{passes} · {lens}",
+            )
+            prompt = (
+                f"Independent reflection candidate {pass_index}/{passes}: {lens}.\n"
+                f"Task for this stage: {_VIBE_DELIBERATION_TASKS[lens]}\n"
+                "Do not assume another candidate's approach. Derive this candidate "
+                "independently from the objective and supplied evidence.\n"
+                "Original user objective (never replace it with the current plan):\n"
+                f"{objective}\n\n"
+                f"Current conversation and evidence:\n{bounded_context}"
+            )
+            try:
+                result = await self._complete(
+                    model=deliberation_model,
+                    messages=[
+                        LLMMessage(
+                            role=Role.system,
+                            content=UtilityPrompt.VIBE_DELIBERATION.read(),
+                        ),
+                        LLMMessage(role=Role.user, content=prompt),
+                    ],
+                    tools=[],
+                    tool_choice=None,
+                    call_type="secondary_call",
+                    max_tokens=_VIBE_DELIBERATION_MAX_TOKENS[thinking],
+                )
+            except Exception:
+                logger.warning("Vibe deliberation failed", exc_info=True)
+                yield ReasoningEvent(
+                    content=(
+                        f"Vibe thinking candidate {pass_index} unavailable; "
+                        "continuing with the remaining candidates."
+                    ),
+                    message_id=reasoning_message_id,
+                )
+                continue
+            candidate = (result.message.content or "").strip()
+            if candidate:
+                candidates.append((lens, candidate))
+                summary, status = _visible_thinking_summary(
+                    f"Vibe candidate {pass_index}/{passes}",
+                    candidate,
+                    (
+                        ("REAL OUTCOME", "Goal"),
+                        ("NEXT ACTION", "Candidate action"),
+                        ("VERIFICATION", "Proof"),
+                        ("PIVOT TRIGGER", "Pivot if"),
+                    ),
+                )
+                yield ReasoningEvent(
+                    content=summary, message_id=reasoning_message_id, status_text=status
+                )
+
+        if not candidates:
+            return
+
+        yield ReasoningEvent(
+            content=(
+                f"Vibe thinking: compacting {len(candidates)} independent "
+                "candidate(s) into the execution brief\n"
+            ),
+            message_id=reasoning_message_id,
+            status_text=f"Vibe thinking · synthesizing {len(candidates)} options",
+        )
+        brief = await self._synthesize_vibe_candidates(
+            objective, bounded_context, candidates, thinking
+        )
+        summary, status = _visible_thinking_summary(
+            "Vibe decision",
+            brief,
+            (
+                ("DIRECTION", "Direction"),
+                ("REAL OUTCOME", "Goal"),
+                ("DECISION", "Chosen route"),
+                ("PLAN", "Plan"),
+                ("NEXT ACTION", "Next action"),
+                ("COMPLETION GATE", "Completion proof"),
+                ("PIVOT TRIGGER", "Pivot if"),
+            ),
+        )
+        yield ReasoningEvent(
+            content=summary, message_id=reasoning_message_id, status_text=status
+        )
+
+        deliberation_message = LLMMessage(
+            role=Role.user,
+            content=(
+                "<vibe_deliberation>\n"
+                "Use this private preflight brief for the next decision only. Verify "
+                "its claims rather than treating them as evidence. Use web_search "
+                "before asserting current, external, or uncertain facts when web "
+                "search is enabled. If a material ambiguity cannot be resolved from "
+                "available context, ask one focused clarifying question instead of "
+                "guessing. Do not keep the current plan because of sunk cost: when "
+                "the brief says PIVOT and available evidence supports it, change the "
+                "plan before taking the next action. CONTINUE still requires the "
+                "stated proof. For a substantive task, materialize or state the brief's "
+                "plan before the first mutating tool call, execute it in dependency "
+                "order, and do not claim completion until every completion gate has "
+                f"observable evidence.\n\n{brief}\n"
+                "</vibe_deliberation>"
+            ),
+            injected=True,
+        )
+        self.messages.append(deliberation_message)
+        self._active_vibe_deliberation_message = deliberation_message
+
+    def _latest_tool_failed(self) -> bool:
+        latest = next(
+            (
+                message
+                for message in reversed(self.messages)
+                if not is_working_memory_message(message)
+            ),
+            None,
+        )
+        if latest is None or latest.role is not Role.tool:
+            return False
+        content = latest.content or ""
+        return f"<{TOOL_ERROR_TAG}>" in content or "TASK_RESULT: FAIL" in content
+
+    async def _run_fast_thinking(
+        self, objective: str
+    ) -> AsyncGenerator[BaseEvent, None]:
+        thinking = self.config.autonomy.vibe_thinking
+        bounded_context = self._vibe_deliberation_context(objective, thinking=thinking)
+        reasoning_message_id = f"fast-thinking-{uuid4()}"
+        yield ReasoningEvent(
+            content="Fast thinking: checking direction and missing proof\n",
+            message_id=reasoning_message_id,
+            status_text=(
+                "Fast thinking · self-check "
+                f"{self._vibe_turns_since_full}/{_VIBE_FULL_THINKING_INTERVAL}"
+            ),
+        )
+        fast_model = self.config.get_active_model().model_copy(
+            update={"thinking": "low"}
+        )
+        try:
+            result = await self._complete(
+                model=fast_model,
+                messages=[
+                    LLMMessage(
+                        role=Role.system,
+                        content=UtilityPrompt.VIBE_FAST_THINKING.read(),
+                    ),
+                    LLMMessage(
+                        role=Role.user,
+                        content=(
+                            "Original objective:\n"
+                            f"{objective}\n\nCurrent bounded evidence:\n{bounded_context}"
+                        ),
+                    ),
+                ],
+                tools=[],
+                tool_choice=None,
+                call_type="secondary_call",
+                max_tokens=_VIBE_FAST_THINKING_MAX_TOKENS,
+            )
+        except Exception:
+            logger.warning("Fast thinking failed", exc_info=True)
+            return
+        brief = (result.message.content or "").strip()
+        if not brief:
+            return
+        summary, status = _visible_thinking_summary(
+            "Fast check",
+            brief,
+            (
+                ("DIRECTION", "Direction"),
+                ("EVIDENCE", "Evidence"),
+                ("GAP", "Missing proof"),
+                ("NEXT", "Next action"),
+            ),
+        )
+        yield ReasoningEvent(
+            content=summary, message_id=reasoning_message_id, status_text=status
+        )
+        deliberation_message = LLMMessage(
+            role=Role.user,
+            content=(
+                "<fast_thinking>\n"
+                "Use this bounded self-check for the next action only. Verify its "
+                "claims and pivot when its evidence supports PIVOT. Do not report "
+                f"completion without observable proof.\n\n{brief}\n"
+                "</fast_thinking>"
+            ),
+            injected=True,
+        )
+        self.messages.append(deliberation_message)
+        self._active_vibe_deliberation_message = deliberation_message
+
+    async def _run_vibe_deliberation(
+        self, objective: str
+    ) -> AsyncGenerator[BaseEvent, None]:
+        passes = self.config.autonomy.vibe_thinking_passes
+        if self._is_subagent or passes == 0:
+            return
+        full_due = (
+            self._vibe_turns_since_full >= _VIBE_FULL_THINKING_INTERVAL
+            or self._latest_tool_failed()
+        )
+        runner = (
+            self._run_full_vibe_deliberation if full_due else self._run_fast_thinking
+        )
+        async for event in runner(objective):
+            yield event
+
+    async def _prepare_turn_orchestration(
+        self, objective: str, *, injected: bool
+    ) -> AsyncGenerator[BaseEvent, None]:
+        if not injected:
+            self._vibe_turns_since_full = _VIBE_FULL_THINKING_INTERVAL
+        async for event in self._refresh_personal_experience(objective):
+            yield event
+        async for event in self._run_vibe_deliberation(objective):
+            yield event
+        autonomy = await self._prepare_autonomy_turn(
+            injected=injected, objective=objective
+        )
+        async for event in self._bootstrap_autonomy(
+            autonomy, objective, injected=injected
+        ):
+            yield event
+
+    async def _prepare_bounded_turn_orchestration(
+        self, objective: str, *, injected: bool
+    ) -> AsyncGenerator[BaseEvent, None]:
+        async for event in self._prepare_turn_orchestration(
+            objective, injected=injected
+        ):
+            yield event
+
+    async def _perform_deliberated_llm_turn(
+        self, objective: str, autonomy: AutonomyCoordinator | None
+    ) -> AsyncGenerator[BaseEvent, None]:
+        async for event in self._run_recovery_web_search(objective):
+            yield event
+        async for event in self._refresh_personal_experience(objective):
+            yield event
+        if self._active_vibe_deliberation_message is None:
+            async for event in self._run_vibe_deliberation(objective):
+                yield event
+        try:
+            async for event in self._perform_llm_turn():
+                if autonomy is not None:
+                    autonomy.observe(event)
+                yield event
+        finally:
+            self._clear_vibe_deliberation()
+            self._clear_personal_experience_context()
 
     def _build_backend_metadata(
         self, call_type: TelemetryCallType | None = None
@@ -1846,6 +2530,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             resources=resources or None,
         )
         self.messages.append(user_message)
+        self._automatic_web_queries.clear()
+        self._experience_context_fresh = False
+        self._experience_status_reported = False
         self.stats.steps += 1
         self._current_user_message_id = user_message.message_id
 
@@ -1874,6 +2561,435 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if self._hooks_manager:
             self._hooks_manager.reset_retry_count()
 
+    def _clear_personal_experience_context(self) -> None:
+        if self._active_experience_message is None:
+            return
+        self.messages.discard(self._active_experience_message)
+        self._active_experience_message = None
+
+    def _personal_experience_query(self, objective: str) -> str:
+        recent: list[str] = []
+        for message in reversed(self.messages):
+            content = message.content or ""
+            if (
+                not content
+                or message is self._active_experience_message
+                or "<personal_experience>" in content
+            ):
+                continue
+            recent.append(content[:1_000])
+            if len(recent) == _EXPERIENCE_QUERY_MESSAGE_LIMIT:
+                break
+        return "\n".join([objective, *reversed(recent)])
+
+    async def _refresh_personal_experience(
+        self, objective: str
+    ) -> AsyncGenerator[BaseEvent, None]:
+        if self._is_subagent or self._experience_context_fresh:
+            return
+        self._clear_personal_experience_context()
+        self._experience_context_fresh = True
+        if not self.config.autonomy.personal_experience:
+            return
+        project_key = project_experience_key(self.cwd)
+        try:
+            entries = await asyncio.to_thread(
+                self._experience_store.search,
+                self._personal_experience_query(objective),
+                project_key=project_key,
+            )
+        except ExperienceStoreError as exc:
+            if not self._experience_status_reported:
+                self._experience_status_reported = True
+                yield MemoryStatusEvent(
+                    status="error",
+                    message=f"Personal experience could not be searched: {exc}",
+                )
+            return
+        rendered = render_experience_context(entries)
+        if rendered:
+            message = LLMMessage(role=Role.system, content=rendered, injected=True)
+            self.messages.append(message)
+            self._active_experience_message = message
+        if not self._experience_status_reported:
+            self._experience_status_reported = True
+            yield MemoryStatusEvent(
+                status="experience_loaded",
+                message=(
+                    f"Continual RAG active: consulted {len(entries)} relevant local "
+                    "tool/web outcomes; retrieval repeats before each decision."
+                ),
+                persistent_entries=len(entries),
+            )
+
+    async def _persist_personal_experience(
+        self,
+        records: Sequence[
+            tuple[str, str, Literal["success", "failure", "skipped"], str]
+        ],
+    ) -> AsyncGenerator[BaseEvent, None]:
+        self._experience_context_fresh = False
+        if (
+            self._is_subagent
+            or not self.config.autonomy.personal_experience
+            or not records
+        ):
+            return
+        try:
+            saved = await asyncio.to_thread(
+                self._experience_store.record_many,
+                records,
+                project_key=project_experience_key(self.cwd),
+            )
+        except ExperienceStoreError as exc:
+            yield MemoryStatusEvent(
+                status="error",
+                message=f"Personal experience could not be updated: {exc}",
+            )
+            return
+        yield MemoryStatusEvent(
+            status="experience_saved",
+            message=(
+                f"Continual RAG learned from {saved} verified tool/web outcomes; "
+                "they are available to the next decision."
+            ),
+            persistent_entries=saved,
+        )
+
+    async def _report_global_memory_status(
+        self, *, injected: bool
+    ) -> AsyncGenerator[BaseEvent, None]:
+        if injected or self._is_subagent or self._global_memory_status_reported:
+            return
+        self._global_memory_status_reported = True
+        working_memory = load_working_memory(self.messages)
+        fast_entries = len(working_memory.entries)
+        if "user" not in self.harness_files.sources:
+            if fast_entries:
+                yield MemoryStatusEvent(
+                    status="restored",
+                    message=(
+                        f"Fast working memory restored: {fast_entries} recent tool "
+                        "results; global memory is disabled."
+                    ),
+                    fast_entries=fast_entries,
+                )
+            else:
+                yield MemoryStatusEvent(
+                    status="skipped",
+                    message="Global memory skipped: user-level context is disabled.",
+                )
+            return
+        try:
+            document = await asyncio.to_thread(GlobalMemoryStore().load)
+        except MemoryStoreError as exc:
+            yield MemoryStatusEvent(
+                status="error",
+                message=f"Global memory could not be loaded: {exc}",
+                fast_entries=fast_entries,
+            )
+            return
+
+        if not document.entries:
+            if fast_entries:
+                yield MemoryStatusEvent(
+                    status="restored",
+                    message=(
+                        f"Fast working memory restored: {fast_entries} recent tool "
+                        "results will be checked before new actions."
+                    ),
+                    fast_entries=fast_entries,
+                )
+            return
+
+        memory_was_injected = any(
+            message.role is Role.system and "<global_memory>" in (message.content or "")
+            for message in self.messages
+        )
+        if not memory_was_injected:
+            yield MemoryStatusEvent(
+                status="stale",
+                message=(
+                    "Global memory exists but was not injected into this session; "
+                    "restart Vibe to reload it."
+                ),
+                fast_entries=fast_entries,
+                persistent_entries=len(document.entries),
+            )
+            return
+        yield MemoryStatusEvent(
+            status="loaded",
+            message=(
+                f"Memory loaded: {fast_entries} recent tool results and "
+                f"{len(document.entries)} persistent entries are available."
+            ),
+            fast_entries=fast_entries,
+            persistent_entries=len(document.entries),
+        )
+
+    async def _run_automatic_web_search(
+        self, objective: str, *, injected: bool
+    ) -> AsyncGenerator[BaseEvent, None]:
+        activity = self.config.autonomy.web_search_activity
+        if (
+            injected
+            or self._is_subagent
+            or not self._should_presearch(objective, activity=activity)
+        ):
+            return
+        query = " ".join(objective.split())[:500].strip()
+        normalized_query = query.casefold()
+        if not query or normalized_query in self._automatic_web_queries:
+            return
+        self._automatic_web_queries.add(normalized_query)
+        try:
+            tool_instance = self.tool_manager.get("web_search")
+        except NoSuchToolError:
+            yield AssistantEvent(
+                content=(
+                    f"◇ {activity.title()} web search could not start: the web_search tool is "
+                    "unavailable in the active runtime."
+                )
+            )
+            return
+        args = WebSearchArgs(query=query)
+        call_id = str(uuid4())
+        self.messages.append(
+            LLMMessage(
+                role=Role.assistant,
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id=call_id,
+                        index=0,
+                        function=FunctionCall(
+                            name="web_search", arguments=args.model_dump_json()
+                        ),
+                    )
+                ],
+            )
+        )
+        resolved = ResolvedMessage(
+            tool_calls=[
+                ResolvedToolCall(
+                    tool_name="web_search",
+                    tool_class=type(tool_instance),
+                    validated_args=args,
+                    call_id=call_id,
+                )
+            ]
+        )
+        async for event in self._handle_tool_calls(resolved):
+            yield event
+
+    def _latest_tool_failure_summary(self) -> tuple[str, str] | None:
+        latest = next(
+            (
+                message
+                for message in reversed(self.messages)
+                if not is_working_memory_message(message)
+            ),
+            None,
+        )
+        if (
+            latest is None
+            or latest.role is not Role.tool
+            or latest.name == "web_search"
+        ):
+            return None
+        content = latest.content or ""
+        if f"<{TOOL_ERROR_TAG}>" not in content and "TASK_RESULT: FAIL" not in content:
+            return None
+        return latest.name or "tool", sanitize_experience_text(content, limit=280)
+
+    async def _run_recovery_web_search(
+        self, objective: str
+    ) -> AsyncGenerator[BaseEvent, None]:
+        if self.config.autonomy.web_search_activity not in {"high", "max"}:
+            return
+        failure = self._latest_tool_failure_summary()
+        if failure is None:
+            return
+        tool_name, error = failure
+        query = (
+            "Find current primary documentation or authoritative fixes for this "
+            f"failed {tool_name} step. Goal: {objective}. Observed failure: {error}"
+        )
+        async for event in self._run_automatic_web_search(query, injected=False):
+            yield event
+
+    @staticmethod
+    def _is_trivial_direct_request(objective: str) -> bool:
+        normalized = objective.casefold().strip(" .!?\t\r\n")
+        return normalized in {
+            "hi",
+            "hello",
+            "hey",
+            "привет",
+            "здравствуй",
+            "спасибо",
+            "thanks",
+        }
+
+    def _start_execution_budget(
+        self, objective: str, *, injected: bool
+    ) -> ReasoningEvent | None:
+        if injected and self._execution_budget is not None:
+            return None
+        if self._is_subagent or not self.config.autonomy.enabled:
+            self._execution_profile = None
+            self._execution_budget = None
+            return None
+        profile = classify_task(
+            objective,
+            force_large=(
+                (self.config.autonomy.boost_mode or self.config.autonomy.gauntlet_loop)
+                and not self._is_trivial_direct_request(objective)
+            ),
+        )
+        self._execution_profile = profile
+        self._execution_budget = ExecutionBudgetTracker(
+            profile, initial_tokens=self.stats.session_total_llm_tokens
+        )
+        if profile.scale is not TaskScale.DIRECT:
+            self.messages.insert(
+                -1,
+                LLMMessage(
+                    role=Role.user,
+                    injected=True,
+                    content=(
+                        "<execution_budget>\n"
+                        f"Locally classified task size: {profile.scale.value}. "
+                        "This profile has no total wall-clock, token, or main-turn "
+                        "limit. Classification controls orchestration depth only. "
+                        "Prefer the shortest proven path, "
+                        "reuse existing evidence, avoid repeating unchanged tool calls. "
+                        "Issue known independent reads, searches, and checks together "
+                        "as 2-4 tool calls in the same response so the runtime can run "
+                        "them concurrently. Combine dependent cheap shell diagnostics "
+                        "into one bounded multiline script instead of paying a model "
+                        "round trip per command. Preserve real dependencies and never "
+                        "parallelize overlapping mutations. Run tests and observable "
+                        "verification before completion. Stop exploring once the acceptance criteria are "
+                        "proven.\n</execution_budget>"
+                    ),
+                ),
+            )
+        return ReasoningEvent(
+            content=(f"Performance profile: {profile.scale.value} · no total limits\n"),
+            status_text=f"Performance · {profile.scale.value} · unlimited",
+        )
+
+    def _bounded_subagent_timeout(self, configured_seconds: int) -> float | None:
+        if configured_seconds <= 0:
+            return None
+        if self._execution_budget is None:
+            return float(configured_seconds)
+        return float(configured_seconds)
+
+    def _should_presearch(self, objective: str, *, activity: WebSearchActivity) -> bool:
+        if self._is_trivial_direct_request(objective):
+            return False
+        if _LOCAL_OR_SENSITIVE_SEARCH_RE.search(objective):
+            return False
+        normalized = objective.casefold()
+        temporal_markers = (
+            "latest",
+            "current",
+            "today",
+            "now",
+            "version",
+            "price",
+            "documentation",
+            "последн",
+            "текущ",
+            "сегодня",
+            "сейчас",
+            "актуал",
+            "верси",
+            "цен",
+            "документац",
+        )
+        explicit_search_markers = (
+            "search",
+            "web search",
+            "google",
+            "internet",
+            "поиск",
+            "поищи",
+            "интернет",
+        )
+        research_markers = (
+            "compare",
+            "research",
+            "verify",
+            "docs",
+            "api",
+            "сравни",
+            "исслед",
+            "проверь",
+            "документац",
+        )
+        match activity:
+            case "off":
+                return False
+            case "low":
+                return any(marker in normalized for marker in explicit_search_markers)
+            case "medium":
+                return any(
+                    marker in normalized
+                    for marker in (
+                        *temporal_markers,
+                        *explicit_search_markers,
+                        *research_markers,
+                    )
+                )
+            case "high" | "max":
+                return True
+
+    async def _prepare_visible_turn_context(
+        self, objective: str, *, injected: bool
+    ) -> AsyncGenerator[BaseEvent, None]:
+        if budget_event := self._start_execution_budget(objective, injected=injected):
+            yield budget_event
+        async for event in self._report_global_memory_status(injected=injected):
+            yield event
+        async for event in self._run_automatic_web_search(objective, injected=injected):
+            yield event
+
+    async def _run_harness_phase(
+        self,
+        phase: HarnessPhase,
+        objective: str,
+        *,
+        tool_name: str | None = None,
+        outcome: str | None = None,
+        metadata: dict[str, str | int | float | bool | None] | None = None,
+    ) -> HarnessDecision:
+        decision = await self.harness.run(
+            phase,
+            session_id=self.session_id,
+            step=self.stats.steps,
+            objective=objective,
+            tool_name=tool_name,
+            outcome=outcome,
+            metadata=metadata,
+        )
+        context_phases = {
+            HarnessPhase.TURN_START,
+            HarnessPhase.PRE_STEP,
+            HarnessPhase.MODEL_REQUEST,
+        }
+        if decision.event.context and phase not in context_phases:
+            raise RuntimeError(
+                f"Harness plugins cannot inject model context during {phase.value}"
+            )
+        for context_item in decision.event.context:
+            self.messages.append(
+                LLMMessage(role=Role.user, content=context_item, injected=True)
+            )
+        return decision
+
     @staticmethod
     def _should_break_after_turn(last_message: LLMMessage, *, drained: bool) -> bool:
         injected_visual_result = (
@@ -1887,7 +3003,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             and not drained
         )
 
-    async def _conversation_loop(  # noqa: PLR0912
+    def _record_completed_main_turn(self) -> None:
+        self.stats.steps += 1
+        self._vibe_turns_since_full += 1
+        if self._execution_budget is not None:
+            self._execution_budget.record_main_turn()
+
+    async def _conversation_loop(  # noqa: PLR0911, PLR0912, PLR0915
         self,
         user_msg: str,
         client_message_id: str | None = None,
@@ -1899,6 +3021,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         resources: list[UserResource] | None = None,
         injected: bool = False,
     ) -> AsyncGenerator[BaseEvent]:
+        turn_start = await self._run_harness_phase(HarnessPhase.TURN_START, user_msg)
+        if turn_start.stop_reason is not None:
+            yield AssistantEvent(
+                content=turn_start.stop_reason, stopped_by_middleware=True
+            )
+            return
         async for event in self._open_user_turn(
             user_msg,
             client_message_id=client_message_id,
@@ -1911,20 +3039,31 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         ):
             yield event
 
+        async for event in self._prepare_visible_turn_context(
+            user_msg, injected=injected
+        ):
+            yield event
+
         try:
-            autonomy = self._prepare_autonomy_turn(
-                injected=injected, objective=user_msg
-            )
-            async for event in self._bootstrap_autonomy(
-                autonomy, user_msg, injected=injected
+            async for event in self._prepare_bounded_turn_orchestration(
+                user_msg, injected=injected
             ):
                 yield event
+            autonomy = self._autonomy_coordinator
             if self._autonomy_bootstrap_blocked:
                 return
             should_break_loop = False
             first_llm_turn = True
             while not should_break_loop:
                 self._is_user_prompt_call = False
+                pre_step = await self._run_harness_phase(
+                    HarnessPhase.PRE_STEP, user_msg
+                )
+                if pre_step.stop_reason is not None:
+                    yield AssistantEvent(
+                        content=pre_step.stop_reason, stopped_by_middleware=True
+                    )
+                    return
                 result = await self.middleware_pipeline.run_before_turn(
                     self._get_context()
                 )
@@ -1937,11 +3076,20 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 user_cancelled = False
                 self._is_user_prompt_call = first_llm_turn
                 try:
-                    async for event in self._perform_llm_turn():
+                    model_request = await self._run_harness_phase(
+                        HarnessPhase.MODEL_REQUEST, user_msg
+                    )
+                    if model_request.stop_reason is not None:
+                        yield AssistantEvent(
+                            content=model_request.stop_reason,
+                            stopped_by_middleware=True,
+                        )
+                        return
+                    async for event in self._perform_deliberated_llm_turn(
+                        user_msg, autonomy
+                    ):
                         if is_user_cancellation_event(event):
                             user_cancelled = True
-                        if autonomy is not None:
-                            autonomy.observe(event)
                         yield event
                 except ContextTooLongError:
                     if not self._should_self_heal():
@@ -1953,7 +3101,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 # A turn ran to completion: count it against the turn budget (so
                 # an overflow-and-retry never does) and mark later turns as
                 # follow-ups.
-                self.stats.steps += 1
+                self._record_completed_main_turn()
                 first_llm_turn = False
                 # Per-turn save so the on-disk log stays fresh; after the
                 # inner loop so pre_tool rewrites land in the snapshot.
@@ -1966,7 +3114,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     should_break_loop = False
                     continue
 
-                last_message = self.messages[-1]
+                last_message = next(
+                    message
+                    for message in reversed(self.messages)
+                    if not is_working_memory_message(message)
+                )
                 drained = self._drain_pending_injections()
                 should_break_loop = self._should_break_after_turn(
                     last_message, drained=drained
@@ -1976,6 +3128,24 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     return
 
                 if should_break_loop:
+                    stopping = await self._run_harness_phase(
+                        HarnessPhase.TURN_STOPPING, user_msg
+                    )
+                    if stopping.stop_reason is not None:
+                        yield AssistantEvent(
+                            content=stopping.stop_reason, stopped_by_middleware=True
+                        )
+                        return
+                    if stopping.continue_prompt:
+                        self.messages.append(
+                            LLMMessage(
+                                role=Role.user,
+                                content=stopping.continue_prompt,
+                                injected=True,
+                            )
+                        )
+                        should_break_loop = False
+                        continue
                     retry_msg, hook_events = await self._dispatch_post_turn_hooks()
                     for hook_event in hook_events:
                         yield hook_event
@@ -1993,6 +3163,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                             return
 
         finally:
+            with contextlib.suppress(Exception):
+                await self._run_harness_phase(HarnessPhase.TURN_END, user_msg)
+            self.harness.finish_turn()
+            self._clear_vibe_deliberation()
+            self._clear_personal_experience_context()
             await self._save_messages()
 
     async def _bootstrap_autonomy(
@@ -2050,12 +3225,71 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         bounded_objective = _compact_autonomy_text(
             objective, _AUTONOMY_OBJECTIVE_MAX_CHARS, "objective"
         )
+        gauntlet_instruction = ""
+        if self.config.autonomy.gauntlet_loop:
+            gauntlet_instruction = (
+                "Gauntlet Loop is enabled. Establish a named, fetchable, directly "
+                "comparable quality bar from real evidence. Include acquiring that "
+                "reference in the plan, split implementation into independently "
+                "judgeable builder tasks, and preserve the bar and comparison method "
+                "in task text so a separate critic can judge the actual outputs. "
+            )
+        boost_instruction = ""
+        if self.config.autonomy.boost_mode:
+            boost_instruction = (
+                "BOOST is enabled. Build acceptance criteria from the exact request; "
+                "separate known facts from assumptions; add repository or web research "
+                "where evidence is missing; assign independent implementation and "
+                "verification work; and include concrete commands or observable state "
+                "that can prove every completion claim. Keep the graph compact. "
+            )
+        preflight_instruction = ""
+        if self._active_vibe_deliberation_message is not None:
+            preflight_instruction = (
+                "The root Vibe Thinking preflight ran before delegation. Use this "
+                "bounded decision brief as planning input, but verify every claim "
+                "against real evidence and keep the original objective authoritative:\n"
+                + _compact_autonomy_text(
+                    self._active_vibe_deliberation_message.content or "",
+                    _AUTONOMY_DEPENDENCY_CONTEXT_MAX_CHARS,
+                    "preflight brief",
+                )
+                + "\n\n"
+            )
         args = TaskArgs(
             agent="goal-advisor",
+            max_turns=(
+                self._execution_profile.advisor_turns
+                if self._execution_profile is not None
+                and self._execution_profile.advisor_turns > 0
+                else None
+            ),
+            timeout_seconds=(
+                self._bounded_subagent_timeout(
+                    self._execution_profile.advisor_timeout_seconds
+                )
+                if self._execution_profile is not None
+                and self._execution_profile.advisor_timeout_seconds > 0
+                else None
+            ),
             task=(
-                "Decompose this objective into acceptance criteria and a compact "
+                preflight_instruction
+                + boost_instruction
+                + gauntlet_instruction
+                + "Decompose this objective into acceptance criteria and a compact "
                 "dependency graph of executable tasks. Identify which tasks are "
-                "independent and can be delegated immediately. Do not implement.\n\n"
+                "independent and can be delegated immediately. For compound work, "
+                "create separate non-overlapping explore/worker tasks and mark real "
+                "dependencies; do not collapse independent work into one generic "
+                "worker. Parallel workers must own disjoint files or components. "
+                "Do not implement. "
+                + (
+                    f"Use at most {self._execution_profile.max_plan_tasks} tasks. "
+                    if self._execution_profile is not None
+                    else ""
+                )
+                + "Do not create separate tasks for work that can be verified in "
+                "the same focused execution.\n\n"
                 f"Objective:\n{bounded_objective}"
             ),
         )
@@ -2095,27 +3329,25 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             yield event
 
         if advisor_result is None:
-            self.messages.append(
-                LLMMessage(
-                    role=Role.user,
-                    injected=True,
-                    content=(
-                        "The automatic goal advisor failed. Retry the goal-advisor "
-                        "task before planning or implementation."
-                    ),
-                )
-            )
             yield AssistantEvent(
                 content=(
-                    "Autonomous planning stopped: the goal advisor did not complete "
-                    "successfully. Check the advisor model/API access and retry."
-                ),
-                stopped_by_middleware=True,
+                    "Goal advisor unavailable; using the active model fallback and "
+                    "continuing autonomous planning."
+                )
             )
-            return
-
-        self._autonomy_advisor_completed = True
-        plan = parse_advisor_plan(advisor_result.response, objective)
+        plan = await self._resolve_advisor_plan(advisor_result, args.task, objective)
+        if (
+            self._execution_profile is not None
+            and self._execution_profile.max_plan_tasks > 0
+            and len(plan.tasks) > self._execution_profile.max_plan_tasks
+        ):
+            logger.warning(
+                "Advisor plan exceeded performance cap tasks=%s cap=%s; "
+                "using one focused worker task",
+                len(plan.tasks),
+                self._execution_profile.max_plan_tasks,
+            )
+            plan = parse_advisor_plan("", objective)
         has_worker = any(task.agent == "worker" for task in plan.tasks)
         has_root = any(task.agent == "root" for task in plan.tasks)
         if self.config.autonomy.require_worker and not has_worker and not has_root:
@@ -2139,6 +3371,78 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 ),
             )
         )
+
+    async def _resolve_advisor_plan(
+        self, advisor_result: TaskResult | None, task: str, objective: str
+    ) -> AutonomyPlan:
+        if advisor_result is not None:
+            response = advisor_result.response
+            evidence_label = "goal-advisor: "
+        else:
+            self.messages.append(
+                LLMMessage(
+                    role=Role.user,
+                    injected=True,
+                    content=(
+                        "The dedicated goal advisor failed. The active main model is "
+                        "now producing a read-only fallback plan; continue instead "
+                        "of stopping the user's task."
+                    ),
+                )
+            )
+            response = await self._run_active_model_advisor_fallback(task)
+            evidence_label = "advisor-fallback: "
+            if self._autonomy_coordinator is not None:
+                self._autonomy_coordinator.seed_advisor_completed()
+
+        self._autonomy_advisor_completed = True
+        self._autonomy_evidence.append(
+            evidence_label
+            + _compact_autonomy_text(
+                response or "active model fallback was unavailable",
+                _AUTONOMY_STORED_RESULT_MAX_CHARS,
+                "advisor evidence",
+            )
+        )
+        if response is not None:
+            return parse_advisor_plan(response, objective)
+        worker_plan = parse_advisor_plan("", objective)
+        return AutonomyPlan(
+            tasks=[worker_plan.tasks[0].model_copy(update={"agent": "root"})]
+        )
+
+    async def _run_active_model_advisor_fallback(self, task: str) -> str | None:
+        messages = [
+            LLMMessage(
+                role=Role.system,
+                content=(
+                    "You are the read-only fallback goal advisor. Return only a "
+                    f"{AUTONOMY_PLAN_START} JSON object {AUTONOMY_PLAN_END}. The "
+                    "object must contain a tasks array; every task has id, content, "
+                    "agent (explore, worker, or root), and depends_on. Keep the graph "
+                    "compact, dependency ordered, and faithful to the objective. Do "
+                    "not execute tools or claim work is complete."
+                ),
+            ),
+            LLMMessage(role=Role.user, content=task),
+        ]
+        try:
+            result = await self._complete(
+                model=self.config.get_active_model(),
+                messages=messages,
+                tools=[],
+                tool_choice=None,
+                call_type="secondary_call",
+                max_tokens=_ADVISOR_FALLBACK_MAX_TOKENS,
+            )
+        except Exception:
+            logger.warning("Active-model advisor fallback failed", exc_info=True)
+            return None
+        response = result.message.content or ""
+        if AUTONOMY_PLAN_START not in response or AUTONOMY_PLAN_END not in response:
+            logger.warning("Active-model advisor fallback returned no valid plan")
+            return None
+        return response
 
     async def _run_automatic_autonomy_plan(
         self, plan: AutonomyPlan, objective: str, *, resume: bool = False
@@ -2211,6 +3515,20 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         args = [
             TaskArgs(
                 agent=task.agent,
+                max_turns=(
+                    self._execution_profile.worker_turns
+                    if self._execution_profile is not None
+                    and self._execution_profile.worker_turns > 0
+                    else None
+                ),
+                timeout_seconds=(
+                    self._bounded_subagent_timeout(
+                        self._execution_profile.worker_timeout_seconds
+                    )
+                    if self._execution_profile is not None
+                    and self._execution_profile.worker_timeout_seconds > 0
+                    else None
+                ),
                 task=self._automatic_task_prompt(
                     task, objective, self._autonomy_task_results
                 ),
@@ -2314,10 +3632,43 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         bounded_objective = _compact_autonomy_text(
             objective, _AUTONOMY_OBJECTIVE_MAX_CHARS, "objective"
         )
+        gauntlet_instruction = ""
+        if self.config.autonomy.gauntlet_loop:
+            gauntlet_instruction = (
+                "Act as the independent harsh Gauntlet critic. Obtain the real quality "
+                "bar named in the execution evidence, compare it directly and blindly "
+                "against the actual output, make a binary choice, and identify the "
+                "largest remaining gap. A pass is forbidden unless our output wins. "
+            )
+        boost_instruction = ""
+        if self.config.autonomy.boost_mode:
+            boost_instruction = (
+                "BOOST review is adversarial and evidence-first. Re-open the changed "
+                "artifacts, run the most relevant checks, challenge the chosen approach "
+                "against at least one plausible alternative, and reject unsupported "
+                "claims, stale web facts, skipped acceptance criteria, or simulated "
+                "verification. "
+            )
         args = TaskArgs(
             agent="reviewer",
+            max_turns=(
+                self._execution_profile.reviewer_turns
+                if self._execution_profile is not None
+                and self._execution_profile.reviewer_turns > 0
+                else None
+            ),
+            timeout_seconds=(
+                self._bounded_subagent_timeout(
+                    self._execution_profile.reviewer_timeout_seconds
+                )
+                if self._execution_profile is not None
+                and self._execution_profile.reviewer_timeout_seconds > 0
+                else None
+            ),
             task=(
-                "Review the current workspace and fresh evidence for this autonomous "
+                boost_instruction
+                + gauntlet_instruction
+                + "Review the current workspace and fresh evidence for this autonomous "
                 "goal. Independently check every acceptance criterion and todo result. "
                 "Do not trust completion claims without matching tool, test, file, or "
                 "observable-state evidence. Before a passing verdict, emit at least one "
@@ -2364,13 +3715,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if not ready:
             return []
         limit = self.config.autonomy.effective_parallel_subagents
+        if self._execution_profile is not None:
+            limit = min(limit, self._execution_profile.max_parallel_subagents)
         if limit == 0:
             return []
-        selected = [task for task in ready if task.agent == "explore"][:limit]
-        if selected:
-            return selected
-        worker = next((task for task in ready if task.agent == "worker"), None)
-        return [worker] if worker is not None else []
+        return [task for task in ready if task.agent in {"explore", "worker"}][:limit]
 
     @staticmethod
     def _automatic_task_prompt(
@@ -2831,9 +4180,34 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _handle_tool_calls(
         self, resolved: ResolvedMessage
     ) -> AsyncGenerator[BaseEvent]:
+        self._pending_working_memory_records.clear()
+        self._experience_context_fresh = False
+        self._experience_status_reported = False
         async for event in self._emit_failed_tool_events(resolved.failed_calls):
             yield event
         if not resolved.tool_calls:
+            experience_records = list(self._pending_working_memory_records)
+            self._flush_working_memory()
+            async for event in self._persist_personal_experience(experience_records):
+                yield event
+            return
+
+        objective = self._autonomy_objective or "execute requested tool batch"
+        dispatch_decision = await self._run_harness_phase(
+            HarnessPhase.TOOL_DISPATCH,
+            objective,
+            metadata={"tool_count": len(resolved.tool_calls)},
+        )
+        if dispatch_decision.stop_reason is not None:
+            async for event in self._emit_failed_tool_events([
+                FailedToolCall(
+                    tool_name=tool_call.tool_name,
+                    call_id=tool_call.call_id,
+                    error=dispatch_decision.stop_reason,
+                )
+                for tool_call in resolved.tool_calls
+            ]):
+                yield event
             return
 
         for tool_call in resolved.tool_calls:
@@ -2863,6 +4237,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 with contextlib.suppress(NoSuchToolError):
                     tool = self.tool_manager.get(event.tool_name)
                     result_images.extend(tool.get_result_images(event.result))
+            yield event
+        result_decision = await self._run_harness_phase(
+            HarnessPhase.TOOL_RESULT,
+            objective,
+            outcome="completed",
+            metadata={"tool_count": len(resolved.tool_calls)},
+        )
+        if result_decision.stop_reason is not None:
+            raise RuntimeError(result_decision.stop_reason)
+        experience_records = list(self._pending_working_memory_records)
+        self._flush_working_memory()
+        async for event in self._persist_personal_experience(experience_records):
             yield event
         if result_images:
             self.messages.append(
@@ -2904,6 +4290,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     failed, error_msg
                 )
             )
+            if not self._is_subagent:
+                self._pending_working_memory_records.append((
+                    failed.tool_name,
+                    failed.error,
+                    "failure",
+                    error_msg,
+                ))
 
     async def _run_tools_concurrently(
         self, tool_calls: list[ResolvedToolCall]
@@ -2963,6 +4356,31 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _process_one_tool_call(
         self, tool_call: ResolvedToolCall
     ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent | HookEvent]:
+        if self._execution_budget is not None:
+            effect = ToolUIDataAdapter(
+                tool_call.tool_class, harness_files=self.harness_files
+            ).effect_kind
+            if effect in _PERFORMANCE_MUTATION_EFFECTS:
+                self._execution_budget.record_mutation()
+            elif self._execution_budget.repeated_read(
+                tool_call.tool_name, tool_call.validated_args.model_dump_json()
+            ):
+                async with tool_span(
+                    tool_name=tool_call.tool_name,
+                    call_id=tool_call.call_id,
+                    arguments=tool_call.validated_args.model_dump_json(),
+                ) as span:
+                    yield self._tool_failure_event(
+                        tool_call,
+                        (
+                            "Repeated unchanged read blocked by the adaptive "
+                            "performance guard. Reuse the two existing observations "
+                            "from context, change the query, or make progress before "
+                            "reading the same target again."
+                        ),
+                        span=span,
+                    )
+                return
         async with tool_span(
             tool_name=tool_call.tool_name,
             call_id=tool_call.call_id,
@@ -3206,32 +4624,46 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _should_execute_tool(
         self, tool: BaseTool, args: BaseModel, tool_call_id: str
     ) -> ToolDecision:
-        if self.bypass_tool_permissions:
-            return ToolDecision(
-                verdict=ToolExecutionResponse.EXECUTE,
-                approval_type=ToolPermission.ALWAYS,
-            )
-
         async with self._permission_store.lock:
             tool_name = tool.get_name()
+            config_perm = self.tool_manager.get_tool_config(tool_name).permission
+
+            # The configured NEVER mode is an administrator/user hard boundary.
+            # A tool may relax ordinary invocations (for example, allowing a
+            # read-only screenshot without a prompt), but it must not turn a
+            # disabled tool back on.
+            if config_perm is ToolPermission.NEVER:
+                return ToolDecision(
+                    verdict=ToolExecutionResponse.SKIP,
+                    approval_type=ToolPermission.NEVER,
+                    feedback=f"Tool '{tool_name}' is permanently disabled",
+                )
+
             ctx = tool.resolve_permission(args)
 
             if ctx is None:
-                config_perm = self.tool_manager.get_tool_config(tool_name).permission
                 ctx = PermissionContext(permission=config_perm)
+
+            # Auto-approval suppresses interactive ASK prompts; it must never
+            # override an explicit hard denial from semantic tool policy.
+            if ctx.permission is ToolPermission.NEVER:
+                return ToolDecision(
+                    verdict=ToolExecutionResponse.SKIP,
+                    approval_type=ToolPermission.NEVER,
+                    feedback=ctx.reason
+                    or f"Tool '{tool_name}' is permanently disabled",
+                )
+            if self.bypass_tool_permissions:
+                return ToolDecision(
+                    verdict=ToolExecutionResponse.EXECUTE,
+                    approval_type=ToolPermission.ALWAYS,
+                )
 
             match ctx.permission:
                 case ToolPermission.ALWAYS:
                     return ToolDecision(
                         verdict=ToolExecutionResponse.EXECUTE,
                         approval_type=ToolPermission.ALWAYS,
-                    )
-                case ToolPermission.NEVER:
-                    return ToolDecision(
-                        verdict=ToolExecutionResponse.SKIP,
-                        approval_type=ToolPermission.NEVER,
-                        feedback=ctx.reason
-                        or f"Tool '{tool_name}' is permanently disabled",
                     )
                 case _:
                     uncovered = [
@@ -3287,6 +4719,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             if persisted_result is not None
             else message
         )
+        if not self._is_subagent:
+            self._pending_working_memory_records.append((
+                tool_call.tool_name,
+                tool_call.validated_args.model_dump_json(),
+                status,
+                text,
+            ))
 
         if span is not None:
             set_tool_result(span, text)
@@ -3299,6 +4738,21 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             result=result,
             message_id=self._current_user_message_id,
         )
+
+    def _flush_working_memory(self) -> None:
+        if self._is_subagent or not self._pending_working_memory_records:
+            self._pending_working_memory_records.clear()
+            return
+        working_context = list(self.messages)
+        latest: LLMMessage | None = None
+        for tool, action, status, result in self._pending_working_memory_records:
+            latest = build_working_memory_message(
+                working_context, tool=tool, action=action, status=status, result=result
+            )
+            working_context.append(latest)
+        self._pending_working_memory_records.clear()
+        if latest is not None:
+            self.messages.append(latest)
 
     def _tool_failure_event(
         self,
@@ -3347,6 +4801,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         tools: list[AvailableTool] | None,
         tool_choice: StrToolChoice | AvailableTool | None,
         call_type: TelemetryCallType | None,
+        max_tokens: int | None = None,
         _allow_fallback: bool = True,
     ) -> LLMChunk:
         """Make one accounted, non-streaming model call.
@@ -3366,6 +4821,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     tools=tools,
                     tool_choice=tool_choice,
                     call_type=call_type,
+                    max_tokens=max_tokens,
                     _allow_fallback=False,
                 )
 
@@ -3413,7 +4869,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     tools=tools,
                     tool_choice=tool_choice,
                     extra_headers=self._get_extra_headers(provider),
-                    max_tokens=self._max_tokens,
+                    max_tokens=max_tokens
+                    if max_tokens is not None
+                    else self._max_tokens,
                     metadata=backend_metadata.model_dump(exclude_none=True),
                 )
             end_time = time.perf_counter()
@@ -3453,6 +4911,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     tools=tools,
                     tool_choice=tool_choice,
                     call_type=call_type,
+                    max_tokens=max_tokens,
                     _allow_fallback=False,
                 )
             if _should_raise_rate_limit_error(e):
@@ -3578,6 +5037,17 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 provider.emits_finish_reason and chunk_agg.stop is None
             ):
                 raise IncompleteStreamError(provider.name, active_model.name)
+            aggregate_message = chunk_agg.message
+            if (
+                (aggregate_message.reasoning_content or "").strip()
+                and not (aggregate_message.content or "").strip()
+                and not aggregate_message.tool_calls
+            ):
+                raise IncompleteStreamError(
+                    provider.name,
+                    active_model.name,
+                    reason="a final answer or tool call after reasoning",
+                )
             if chunk_agg.usage is None:
                 raise AgentLoopLLMResponseError(
                     "Usage data missing in final chunk of streamed completion"
@@ -3857,6 +5327,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._user_plan = None
         self._teleport_service = None
         self._pending_injected_messages = []
+        self._pending_working_memory_records.clear()
+        self._automatic_web_queries.clear()
         self._pending_clear_context = False
         self._current_user_message_id = None
         self._is_user_prompt_call = False

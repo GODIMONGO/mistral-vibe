@@ -40,6 +40,8 @@ from vibe.app_server.models import (
     EffectState,
     FailedEffectState,
     GenericEffectDetail,
+    HarnessPluginView,
+    HarnessRuntimeView,
     ImageAttachment,
     ImageContentBlock,
     MCPSourceKind,
@@ -73,6 +75,7 @@ from vibe.core.config import (
     TTSProviderConfig,
     VibeConfigSchema,
 )
+from vibe.core.harness import HarnessRuntime, HarnessSnapshot
 from vibe.core.log_reader import PaginatedLogs
 from vibe.core.tools.connectors.connector_registry import ConnectorAuthAction
 from vibe.core.tools.connectors.counts import compute_connector_counts
@@ -96,6 +99,27 @@ def project_config(agent_loop: AgentLoop) -> ConfigView:
             agent_loop.config_orchestrator.persisted_active_model()
         ),
         awaiting_experiment_model=agent_loop.awaiting_experiment_model,
+    )
+
+
+def project_harness(harness: HarnessRuntime | HarnessSnapshot) -> HarnessRuntimeView:
+    snapshot = harness.snapshot() if isinstance(harness, HarnessRuntime) else harness
+    return HarnessRuntimeView(
+        phase=snapshot.phase.value,
+        sequence=snapshot.sequence,
+        capabilities=sorted(capability.value for capability in snapshot.capabilities),
+        plugins=[
+            HarnessPluginView(
+                name=plugin.name,
+                version=plugin.version,
+                priority=plugin.priority,
+                capabilities=sorted(
+                    capability.value for capability in plugin.capabilities
+                ),
+                phases=sorted(phase.value for phase in plugin.interceptors),
+            )
+            for plugin in snapshot.plugins
+        ],
     )
 
 
@@ -153,8 +177,12 @@ def project_config_view(
             aggressiveness=config.autonomy.aggressiveness.value,
             goal_advisor_model=config.autonomy.goal_advisor_model,
             reviewer_model=config.autonomy.reviewer_model,
+            vibe_thinking=config.autonomy.vibe_thinking,
             max_parallel_subagents=config.autonomy.max_parallel_subagents,
             web_search_activity=config.autonomy.web_search_activity,
+            gauntlet_loop=config.autonomy.gauntlet_loop,
+            boost_mode=config.autonomy.boost_mode,
+            personal_experience=config.autonomy.personal_experience,
         ),
     )
 

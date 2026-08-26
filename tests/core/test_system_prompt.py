@@ -9,7 +9,13 @@ import pytest
 from tests.conftest import build_test_vibe_config
 from vibe.config_values import WebSearchActivity
 from vibe.core.config import AutonomyConfig, ProjectContextConfig
-from vibe.core.system_prompt import ProjectContextProvider, _get_web_search_policy
+from vibe.core.system_prompt import (
+    ProjectContextProvider,
+    _get_boost_policy,
+    _get_gauntlet_loop_policy,
+    _get_local_reference_policy,
+    _get_web_search_policy,
+)
 
 
 @pytest.mark.parametrize(
@@ -30,6 +36,42 @@ def test_web_search_activity_changes_system_policy(
     )
 
     assert expected in _get_web_search_policy(config)
+
+
+def test_local_codex_thread_policy_prefers_read_only_local_history() -> None:
+    policy = _get_local_reference_policy()
+
+    assert "not a web URL and not a Vibe session ID" in policy
+    assert "~/.codex/sessions" in policy
+    assert "do not invoke Vibe `/resume`" in policy
+    assert "Never copy credentials" in policy
+
+
+def test_gauntlet_loop_policy_requires_real_independent_comparison() -> None:
+    config = build_test_vibe_config(autonomy=AutonomyConfig(gauntlet_loop=True))
+
+    policy = _get_gauntlet_loop_policy(config)
+
+    assert "named, fetchable" in policy
+    assert "separate harsh critic" in policy
+    assert "binary blind choice" in policy
+    assert "robonuggets/gauntlet-loop" in policy
+
+
+def test_gauntlet_loop_policy_is_absent_when_disabled() -> None:
+    config = build_test_vibe_config(autonomy=AutonomyConfig(gauntlet_loop=False))
+
+    assert _get_gauntlet_loop_policy(config) == ""
+
+
+def test_boost_policy_requires_evidence_and_keeps_trivial_requests_direct() -> None:
+    config = build_test_vibe_config(autonomy=AutonomyConfig(boost_mode=True))
+
+    policy = _get_boost_policy(config)
+
+    assert "enforced quality profile" in policy
+    assert "require a fresh evidence-based reviewer verdict" in policy
+    assert "Trivial conversation remains direct" in policy
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fake git shell script is POSIX-only")

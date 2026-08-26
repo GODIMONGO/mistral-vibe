@@ -56,7 +56,13 @@ class MemoryResult(BaseModel):
 
 
 class MemoryConfig(BaseToolConfig):
-    pass
+    auto_remember: bool = Field(
+        default=False,
+        description=(
+            "Allow the root model to save durable user preferences and confirmed "
+            "long-lived conventions without a separate /memory command."
+        ),
+    )
 
 
 class MemoryState(BaseToolState):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -8,6 +8,7 @@ from tests.conftest import build_test_vibe_app, build_test_vibe_config
 from tests.stubs.app_server import CoreEventProjection
 from tests.stubs.fake_tool import FakeTool, FakeToolArgs
 from vibe.cli.textual_ui.handlers.event_handler import EventHandler
+from vibe.cli.textual_ui.widgets.loading import LoadingWidget
 from vibe.cli.textual_ui.widgets.messages import ReasoningMessage
 from vibe.cli.textual_ui.widgets.tools import ToolCallMessage, ToolGroup
 from vibe.core.tools.builtins.edit import Edit, EditArgs
@@ -88,6 +89,25 @@ async def test_reasoning_and_following_tool_call_share_group() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reasoning_status_text_updates_loading_line() -> None:
+    handler, _, projection = _make_handler()
+    loading = MagicMock(spec=LoadingWidget)
+
+    for event in projection.project(
+        ReasoningEvent(content="self-check\n", status_text="Vibe thinking 1/4")
+    ):
+        await handler.handle_event(event, loading)
+
+    loading.set_status.assert_called_with("Vibe thinking 1/4")
+    reasoning = handler.current_streaming_reasoning
+    assert reasoning is not None
+    assert reasoning.status_text == "Vibe thinking 1/4"
+
+    reasoning.set_status_text("Vibe decision · CONTINUE · inspect tests")
+    assert reasoning.status_text == "Vibe decision · CONTINUE · inspect tests"
+
+
+@pytest.mark.asyncio
 async def test_assistant_text_breaks_group_into_two() -> None:
     handler, mount_callback, projection = _make_handler()
 
@@ -165,6 +185,19 @@ async def test_live_thinking_toggle_collapses_only_empty_groups() -> None:
 
         await projection.dispatch(
             ReasoningEvent(content="reasoning only"), handler.handle_event
+        )
+        await projection.dispatch(
+            ReasoningEvent(
+                content="\ndecision summary",
+                status_text="Vibe decision · PIVOT · inspect another route",
+            ),
+            handler.handle_event,
+        )
+        active_reasoning = handler.current_streaming_reasoning
+        assert active_reasoning is not None
+        assert (
+            active_reasoning.status_text
+            == "Vibe decision · PIVOT · inspect another route"
         )
         await projection.dispatch(
             AssistantEvent(content="separator"), handler.handle_event

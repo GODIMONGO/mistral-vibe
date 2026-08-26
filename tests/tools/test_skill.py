@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.conftest import build_test_vibe_config
 from tests.mock.utils import collect_result
 from vibe.core.skills.manager import SkillManager
 from vibe.core.skills.models import SkillInfo
@@ -60,6 +61,21 @@ def skill_tool() -> Skill:
 
 
 class TestSkillRun:
+    @pytest.mark.asyncio
+    async def test_loads_virtual_coding_skill_through_normal_tool(
+        self, skill_tool: Skill
+    ) -> None:
+        manager = SkillManager(lambda: build_test_vibe_config())
+        ctx = _make_ctx(manager)
+
+        result = await collect_result(
+            skill_tool.run(SkillArgs(name="coding-rust-debug-failure-production"), ctx)
+        )
+
+        assert isinstance(result, SkillResult)
+        assert result.name == "coding-rust-debug-failure-production"
+        assert "DeepWiki articles" in result.content
+
     @pytest.mark.asyncio
     async def test_loads_skill_content(self, tmp_path: Path, skill_tool: Skill) -> None:
         info = _make_skill_dir(tmp_path, body="Follow these steps:\n1. Do A\n2. Do B")

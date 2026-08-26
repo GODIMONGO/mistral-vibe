@@ -1,6 +1,6 @@
 """Harden Textual's input path against malformed terminal bytes.
 
-Four defenses, applied by rebinding ``XTermParser`` in every imported
+Five defenses, applied by rebinding ``XTermParser`` in every imported
 ``textual.drivers.*`` module (``WindowsDriver`` builds the parser in
 ``textual.drivers.win32``, not its own module). Each works around a Textual
 upstream limitation; remove the corresponding defense once the linked fix ships.
@@ -32,6 +32,12 @@ upstream limitation; remove the corresponding defense once the linked fix ships.
    outer terminal's reply then arrives on Vibe's stdin, where Textual otherwise
    decodes it as literal keys and forwards it into the child PTY. Some shells
    echo those keys, creating a self-sustaining stream of control sequences.
+
+5. Decode Windows Console Input Mode packets (``CSI Vk;Sc;Uc;Kd;Cs;Rc _``)
+   back into ordinary terminal input. ConPTY enables this mode with
+   ``CSI ? 9001 h`` and may leave the outer terminal in it while a managed Git
+   Bash command runs. Without decoding, every typed key appears in the chat box
+   as a long numeric escape sequence instead of the intended character.
 """
 
 from __future__ import annotations
@@ -65,6 +71,26 @@ _DEVICE_ATTRIBUTES_REPORT = re.compile(r"\x1b\[[?>=][0-9:;]*c")
 _DEVICE_ATTRIBUTES_PREFIXES = ("\x1b[?", "\x1b[>", "\x1b[=")
 _DEVICE_ATTRIBUTES_PAYLOAD = frozenset("0123456789:;")
 
+# Windows Console Input Mode encodes one KEY_EVENT_RECORD per CSI packet:
+# virtual-key;scan-code;unicode-char;key-down;control-state;repeat-count.
+_WIN32_INPUT_REPORT = re.compile(
+    r"\x1b\[([0-9]+);([0-9]+);([0-9]+);([01]);([0-9]+);([0-9]+)_"
+)
+_WIN32_INPUT_PAYLOAD = frozenset("0123456789;")
+_WIN32_INPUT_SEPARATOR_COUNT = 5
+_WIN32_SPECIAL_KEYS = {
+    0x21: "\x1b[5~",  # Page Up
+    0x22: "\x1b[6~",  # Page Down
+    0x23: "\x1b[F",  # End
+    0x24: "\x1b[H",  # Home
+    0x25: "\x1b[D",  # Left
+    0x26: "\x1b[A",  # Up
+    0x27: "\x1b[C",  # Right
+    0x28: "\x1b[B",  # Down
+    0x2D: "\x1b[2~",  # Insert
+    0x2E: "\x1b[3~",  # Delete
+}
+
 _DRIVER_MODULE_PREFIX = "textual.drivers."
 
 _X10_MOUSE_INTRODUCER = "\x1b[M"
@@ -81,8 +107,30 @@ def strip_terminal_reports(data: str) -> str:
     return _DEVICE_ATTRIBUTES_REPORT.sub("", _OSC_COLOR_REPORT.sub("", data))
 
 
+def decode_win32_input_reports(data: str) -> str:
+    """Restore key-down packets emitted by ConPTY's Win32 input mode."""
+
+    def decode(match: re.Match[str]) -> str:
+        virtual_key, _scan_code, unicode_code, key_down, _state, repeat = (
+            int(value) for value in match.groups()
+        )
+        if not key_down:
+            return ""
+        repeat = max(1, repeat)
+        if unicode_code:
+            try:
+                return chr(unicode_code) * repeat
+            except ValueError:
+                return ""
+        return _WIN32_SPECIAL_KEYS.get(virtual_key, "") * repeat
+
+    return _WIN32_INPUT_REPORT.sub(decode, data)
+
+
 def filter_input(data: str) -> str:
-    return strip_terminal_reports(strip_malformed_mouse(data))
+    return decode_win32_input_reports(
+        strip_terminal_reports(strip_malformed_mouse(data))
+    )
 
 
 def _write_to_terminal(sequence: str) -> bool:
@@ -131,10 +179,30 @@ def _is_partial_device_attributes_report(data: str) -> bool:
     return False
 
 
+def _is_partial_win32_input_report(data: str) -> bool:
+    prefix = "\x1b["
+    shared_length = min(len(data), len(prefix))
+    if data[:shared_length] != prefix[:shared_length]:
+        return False
+    if len(data) <= len(prefix):
+        return True
+    payload = data[len(prefix) :]
+    return (
+        all(char in _WIN32_INPUT_PAYLOAD for char in payload)
+        and payload.count(";") <= _WIN32_INPUT_SEPARATOR_COUNT
+    )
+
+
 def _split_partial_terminal_report(data: str) -> tuple[str, str]:
     starts = (
         (data.rfind("\x1b]"), lambda value: _is_partial_color_report(value[2:])),
-        (data.rfind("\x1b["), _is_partial_device_attributes_report),
+        (
+            data.rfind("\x1b["),
+            lambda value: (
+                _is_partial_device_attributes_report(value)
+                or _is_partial_win32_input_report(value)
+            ),
+        ),
     )
     start, is_partial = max(starts, key=lambda candidate: candidate[0])
     if start >= 0 and is_partial(data[start:]):

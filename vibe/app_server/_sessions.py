@@ -419,6 +419,8 @@ class SessionRuntimeRegistry(SubagentRunnerPort):
                 await progress.put(update)
 
         runtime = self._build_child_runtime(child, event_sink=consume_event)
+        if args.max_turns is not None:
+            child.set_max_turns(args.max_turns)
         self._children[child.session_id] = runtime
         self._child_links[child.session_id] = (parent, link_tool_call_id)
         await self._trim_idle_children(
@@ -467,12 +469,26 @@ class SessionRuntimeRegistry(SubagentRunnerPort):
             runtime.turns.wait_for_turn(response.turn.id),
             name=f"vibe-subagent-turn:{child.session_id}",
         )
+        turn: PublicTurn | None = None
         try:
-            async for item in stream_until_complete(
-                progress, completion, event_task_name="vibe-subagent-progress"
-            ):
-                yield item
-            turn = await completion
+            async with asyncio.timeout(args.timeout_seconds):
+                async for item in stream_until_complete(
+                    progress, completion, event_task_name="vibe-subagent-progress"
+                ):
+                    yield item
+                turn = await completion
+        except TimeoutError:
+            if runtime.turns.active_turn is not None:
+                runtime.turns.interrupt(
+                    TurnInterruptParams(
+                        session_id=child.session_id, expected_turn_id=response.turn.id
+                    )
+                )
+            accumulator.record_error(
+                f"Subagent deadline exceeded after {args.timeout_seconds:g}s"
+            )
+            with suppress(asyncio.CancelledError, RuntimeError):
+                await completion
         except (asyncio.CancelledError, GeneratorExit):
             if runtime.turns.active_turn is not None:
                 runtime.turns.interrupt(
@@ -484,14 +500,15 @@ class SessionRuntimeRegistry(SubagentRunnerPort):
                 await completion
             raise
 
-        if turn.error is not None:
+        if turn is not None and turn.error is not None:
             accumulator.record_error(turn.error.message)
         turns_used = sum(message.role is Role.assistant for message in child.messages)
         await self._trim_idle_children(
             parent.agent_loop, keep_session_id=child.session_id
         )
         yield accumulator.build_result(
-            turns_used=turns_used, completed=turn.status is PublicTurnStatus.COMPLETED
+            turns_used=turns_used,
+            completed=(turn is not None and turn.status is PublicTurnStatus.COMPLETED),
         )
 
     async def _trim_idle_children(

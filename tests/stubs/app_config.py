@@ -84,7 +84,11 @@ def build_test_app_config(
             aggressiveness="medium",
             goal_advisor_model="",
             reviewer_model="",
+            vibe_thinking="off",
             max_parallel_subagents=4,
             web_search_activity="medium",
+            gauntlet_loop=False,
+            boost_mode=False,
+            personal_experience=True,
         ),
     )

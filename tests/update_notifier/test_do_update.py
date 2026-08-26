@@ -4,7 +4,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from vibe.cli.update_notifier.update import do_update
+from vibe.cli.update_notifier.update import UPDATE_COMMANDS, do_update
+
+
+@pytest.mark.asyncio
+async def test_powerstral_has_no_upstream_update_command_by_default() -> None:
+    assert UPDATE_COMMANDS == []
+    with (
+        patch("vibe.cli.update_notifier.update.UPDATE_COMMANDS", []),
+        patch(
+            "vibe.cli.update_notifier.update.asyncio.create_subprocess_shell"
+        ) as create_process,
+    ):
+        assert await do_update() is False
+    create_process.assert_not_called()
 
 
 @pytest.mark.asyncio

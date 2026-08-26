@@ -60,6 +60,13 @@ from vibe.core.config.models import (
     TTSModelConfig,
     TTSProviderConfig,
 )
+from vibe.core.config.opencode_go import (
+    OPENCODE_GO_API_KEY_ENV_VAR,
+    OPENCODE_GO_MODEL_PREFIX,
+    OPENCODE_GO_MODELS,
+    OPENCODE_GO_PROVIDERS,
+    OPENCODE_GO_RECOMMENDED_REVIEW_MODEL,
+)
 from vibe.core.config.patch import (
     AddOperationPatch,
     ConfigPatch,
@@ -125,6 +132,11 @@ __all__ = [
     "DEFAULT_VIBE_BASE_URL",
     "FALLBACK_THEME",
     "MISSING_BACKING_STORE_DATA_FINGERPRINT",
+    "OPENCODE_GO_API_KEY_ENV_VAR",
+    "OPENCODE_GO_MODELS",
+    "OPENCODE_GO_MODEL_PREFIX",
+    "OPENCODE_GO_PROVIDERS",
+    "OPENCODE_GO_RECOMMENDED_REVIEW_MODEL",
     "THINKING_LEVELS",
     "AddOperationPatch",
     "AgentProfileLayer",

@@ -71,9 +71,15 @@ class TrustFolderDialog(CenterMiddle):
         self.repo_detected_files = repo_detected_files or []
         self.settings_path = settings_path
         self._options: list[tuple[TrustDecision, str]] = self._build_options()
-        # Default to "Trust folder" (trust_cwd) when available.
+        # Trust is a security boundary: pressing Enter without an explicit
+        # navigation choice must keep an untrusted workspace untrusted.
         self.selected_option = next(
-            (i for i, (d, _) in enumerate(self._options) if d == "trust_cwd"), 0
+            (
+                i
+                for i, (decision, _) in enumerate(self._options)
+                if decision == "decline"
+            ),
+            0,
         )
         self.option_widgets: list[Static] = []
 

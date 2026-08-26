@@ -110,6 +110,7 @@ class ReasoningAdapter(APIAdapter):
             max_tokens=max_tokens,
             tool_choice=tool_choice,
             thinking=thinking,
+            supports_reasoning_effort=provider.supports_reasoning_effort,
         )
 
         return finalize_chat_request(
@@ -118,6 +119,7 @@ class ReasoningAdapter(APIAdapter):
             stream_options={"include_usage": True, "stream_tool_calls": True},
             api_key=api_key,
             endpoint=self.endpoint,
+            supports_stream_options=provider.supports_stream_options,
         )
 
     @staticmethod

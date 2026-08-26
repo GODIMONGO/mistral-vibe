@@ -33,6 +33,7 @@ from vibe.core.agent_loop import AgentLoop
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import (
     DEFAULT_MODELS,
+    AutonomyConfig,
     ModelConfig,
     SessionLoggingConfig,
     VibeConfigSchema,
@@ -456,6 +457,7 @@ def _prepare_test_config_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     # detail unless a test opts in.
     kwargs.setdefault("include_project_context", False)
     kwargs.setdefault("include_prompt_detail", False)
+    kwargs.setdefault("autonomy", AutonomyConfig(personal_experience=False))
     return kwargs
 
 

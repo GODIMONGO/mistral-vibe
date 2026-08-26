@@ -4,10 +4,11 @@ from collections.abc import Sequence
 from html import escape
 import re
 
+from vibe.core.memory import is_working_memory_message
 from vibe.core.types import LLMMessage, Role
 from vibe.core.utils.tokens import approx_token_count, truncate_middle_to_tokens
 
-COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000
+COMPACT_USER_MESSAGE_MAX_TOKENS = 12_000
 _PREVIOUS_USER_MESSAGES_OPEN = "<previous_user_messages>"
 _PREVIOUS_USER_MESSAGES_CLOSE = "</previous_user_messages>"
 _COMPACTION_SUMMARY_OPEN = "<compaction_summary>"
@@ -142,21 +143,41 @@ def _is_compaction_context_message(message: LLMMessage) -> bool:
 
 
 def select_model_context(messages: Sequence[LLMMessage]) -> list[LLMMessage]:
+    working_memory = next(
+        (
+            message
+            for message in reversed(messages)
+            if is_working_memory_message(message)
+        ),
+        None,
+    )
+    filtered = [
+        message for message in messages if not is_working_memory_message(message)
+    ]
     boundary_index = next(
         (
             index
-            for index in range(len(messages) - 1, -1, -1)
-            if _is_compaction_context_message(messages[index])
+            for index in range(len(filtered) - 1, -1, -1)
+            if _is_compaction_context_message(filtered[index])
         ),
         None,
     )
     if boundary_index is None:
-        return list(messages)
+        selected = list(filtered)
+        if working_memory is None:
+            return selected
+        insert_at = 0
+        while insert_at < len(selected) and selected[insert_at].role is Role.system:
+            insert_at += 1
+        selected.insert(insert_at, working_memory)
+        return selected
 
     system_messages = [
-        message for message in messages[:boundary_index] if message.role == Role.system
+        message for message in filtered[:boundary_index] if message.role == Role.system
     ]
-    return [*system_messages, *messages[boundary_index:]]
+    if working_memory is not None:
+        system_messages.append(working_memory)
+    return [*system_messages, *filtered[boundary_index:]]
 
 
 def collect_prior_user_messages(
@@ -189,9 +210,29 @@ def collect_prior_user_messages(
 
         candidates.append(content)
 
+    if not candidates or max_tokens <= 0:
+        return []
+
+    # The first real user turn is the durable objective/constraint envelope.
+    # A newest-first budget alone can silently discard it after repeated
+    # compactions, making the agent redo work or drift from the original goal.
+    # Reserve a bounded quarter of the budget for it and spend the rest on the
+    # freshest turns. The reservation is deliberately small so recent course
+    # corrections still dominate the context.
+    first = candidates[0]
+    first_cost = approx_token_count(first)
+    first_budget = min(
+        first_cost, max_tokens if len(candidates) == 1 else max(1, max_tokens // 4)
+    )
+    preserved_first = (
+        first
+        if first_cost <= first_budget
+        else truncate_middle_to_tokens(first, first_budget)
+    )
+
     selected: list[LLMMessage] = []
-    remaining = max_tokens
-    for content in reversed(candidates):
+    remaining = max_tokens - first_budget
+    for content in reversed(candidates[1:]):
         if remaining <= 0:
             break
         cost = approx_token_count(content)
@@ -206,4 +247,7 @@ def collect_prior_user_messages(
             remaining = 0
 
     selected.reverse()
-    return selected
+    return [
+        LLMMessage(role=Role.user, content=preserved_first, injected=True),
+        *selected,
+    ]

@@ -165,6 +165,18 @@ def test_check_upgrade_fetches_and_prompts_when_update_is_available(
     assert notifier.fetch_update_calls == 1
 
 
+def test_check_upgrade_without_explicit_channel_never_checks_upstream(
+    repository: FileSystemUpdateCacheRepository, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with patch("vibe.setup.update_prompt.ask_update_prompt") as mock_ask:
+        _run_check_upgrade(repository)
+
+    mock_ask.assert_not_called()
+    output = capsys.readouterr().out
+    assert "Powerstral" in output
+    assert "GODIMONGO/powerstral" in output
+
+
 def test_check_upgrade_cancel_does_not_dismiss_update(
     repository: FileSystemUpdateCacheRepository,
 ) -> None:
@@ -288,7 +300,8 @@ def test_failed_update_prints_error_message(
 
     out = capsys.readouterr().out
     assert "could not update automatically" in out
-    assert "package manager" in out
+    assert "GODIMONGO/powerstral" in out
+    assert "mistral-vibe" not in out
 
 
 def test_failed_update_does_not_dismiss_so_user_is_reprompted_on_next_launch(

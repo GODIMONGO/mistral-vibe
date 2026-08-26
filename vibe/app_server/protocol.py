@@ -42,6 +42,7 @@ from vibe.app_server.models import (
     ConnectorCounts,
     ContentBlock,
     DebugLogPage,
+    HarnessRuntimeView,
     IdentityView,
     JsonPatchOperation,
     MCPState,
@@ -714,6 +715,7 @@ class RuntimeSnapshot(ProtocolModel):
     hooks_count: int
     connectors: ConnectorCounts
     mcp: MCPState
+    harness: HarnessRuntimeView = Field(default_factory=HarnessRuntimeView)
 
 
 class RuntimeReadParams(ProtocolModel):

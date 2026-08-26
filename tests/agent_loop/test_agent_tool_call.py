@@ -19,6 +19,7 @@ from vibe.core.config import VibeConfigSchema
 from vibe.core.hooks.manager import HooksManager
 from vibe.core.tools.base import ToolPermission
 from vibe.core.tools.builtins.todo import TodoItem
+from vibe.core.tools.permissions import PermissionContext
 from vibe.core.types import (
     ApprovalRequestEvent,
     ApprovalResponse,
@@ -320,6 +321,63 @@ async def test_tool_call_skipped_when_permission_is_never(
     ]
     assert len(tool_finished) == 1
     assert tool_finished[0]["properties"]["approval_type"] == "never"
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_still_honors_hard_never_permission() -> None:
+    agent_loop = make_agent_loop(
+        auto_approve=True,
+        todo_permission=ToolPermission.NEVER,
+        backend=FakeBackend([
+            [
+                mock_llm_chunk(
+                    content="Trying the disabled tool.",
+                    tool_calls=[make_todo_tool_call("call_auto_never")],
+                )
+            ],
+            [mock_llm_chunk(content="The tool is disabled.")],
+        ]),
+    )
+
+    result = tool_result(await act_and_collect_events(agent_loop, "Use the tool"))
+
+    assert result.skipped is True
+    assert result.result is None
+    assert result.skip_reason is not None
+    assert "permanently disabled" in result.skip_reason.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auto_approve", [False, True])
+async def test_config_never_overrides_semantic_always_permission(
+    auto_approve: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent_loop = make_agent_loop(
+        auto_approve=auto_approve,
+        todo_permission=ToolPermission.NEVER,
+        backend=FakeBackend([
+            [
+                mock_llm_chunk(
+                    content="Trying the disabled tool.",
+                    tool_calls=[make_todo_tool_call("call_semantic_always")],
+                )
+            ],
+            [mock_llm_chunk(content="The tool is disabled.")],
+        ]),
+    )
+    tool = agent_loop.tool_manager.get("todo")
+    monkeypatch.setattr(
+        tool,
+        "resolve_permission",
+        lambda _args: PermissionContext(permission=ToolPermission.ALWAYS),
+    )
+
+    result = tool_result(await act_and_collect_events(agent_loop, "Use the tool"))
+
+    assert result.skipped is True
+    assert result.result is None
+    assert result.skip_reason is not None
+    assert "permanently disabled" in result.skip_reason.lower()
 
 
 @pytest.mark.asyncio

@@ -198,6 +198,7 @@ from vibe.cli.textual_ui.widgets.messages import (
     WhatsNewMessage,
 )
 from vibe.cli.textual_ui.widgets.model_picker import ModelOption, ModelPickerApp
+from vibe.cli.textual_ui.widgets.model_settings import ModelSettingsApp
 from vibe.cli.textual_ui.widgets.narrator_status import NarratorStatus
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.cli.textual_ui.widgets.path_display import PathDisplay
@@ -206,10 +207,7 @@ from vibe.cli.textual_ui.widgets.question_app import QuestionApp
 from vibe.cli.textual_ui.widgets.rewind_app import RewindApp
 from vibe.cli.textual_ui.widgets.rewind_fork_message import RewindForkMessage
 from vibe.cli.textual_ui.widgets.session_picker import SessionPickerApp
-from vibe.cli.textual_ui.widgets.task_status_bar import (
-    TaskStatusBar,
-    is_task_clear_request,
-)
+from vibe.cli.textual_ui.widgets.task_status_bar import TaskStatusBar
 from vibe.cli.textual_ui.widgets.teleport_message import TeleportMessage
 from vibe.cli.textual_ui.widgets.theme_picker import ThemePickerApp, sorted_theme_names
 from vibe.cli.textual_ui.widgets.thinking_picker import ThinkingPickerApp
@@ -243,7 +241,6 @@ from vibe.cli.textual_ui.windowing import (
 from vibe.cli.textual_ui.word_selection import WordSelectScreen
 from vibe.cli.theme import resolve_auto_theme, resolve_theme, resolve_theme_name
 from vibe.cli.update_notifier import (
-    PyPIUpdateGateway,
     UpdateCacheRepository,
     UpdateError,
     UpdateGateway,
@@ -271,6 +268,7 @@ from vibe.observability.logging import (
     set_session_override,
 )
 from vibe.observability.sentry import capture_sentry_exception
+from vibe.opencode_go import OPENCODE_GO_RECOMMENDED_REVIEW_MODEL
 from vibe.utils.audio import RecordingMode
 from vibe.utils.cache_store import FileSystemCacheStore
 from vibe.utils.data_retention import DATA_RETENTION_MESSAGE
@@ -366,6 +364,7 @@ class BottomApp(StrEnum):
     MCP = auto()
     MCPOAuth = auto()
     ModelPicker = auto()
+    ModelSettings = auto()
     ProxySetup = auto()
     Question = auto()
     ThemePicker = auto()
@@ -377,13 +376,65 @@ class BottomApp(StrEnum):
     Voice = auto()
 
 
+class ModelPickerTarget(StrEnum):
+    MAIN = auto()
+    ADVISOR = auto()
+    REVIEWER = auto()
+
+
 # Smooth per-notch wheel scroll duration. Kept short so consecutive notches chain
 # into continuous motion at the same average speed as an instant jump.
 WHEEL_SCROLL_DURATION = 0.1
-_EFFORT_MAX_ARGS = 4
+_EFFORT_MAX_ARGS = 8
 _EFFORT_SUBAGENT_ARGS = 2
 _EFFORT_ACCURACY_ARGS = 3
 _EFFORT_WEB_SEARCH_ARGS = 4
+_EFFORT_VIBE_THINKING_ARGS = 5
+_EFFORT_GAUNTLET_ARGS = 6
+_EFFORT_BOOST_ARGS = 7
+_EFFORT_EXPERIENCE_ARGS = 8
+
+
+def _parse_gauntlet_setting(
+    parts: list[str], *, current: bool, max_parallel_subagents: int
+) -> bool:
+    if len(parts) < _EFFORT_GAUNTLET_ARGS:
+        enabled = current
+    elif parts[5] in {"off", "on"}:
+        enabled = parts[5] == "on"
+    else:
+        raise ValueError("Gauntlet Loop must be off or on.")
+    if enabled and max_parallel_subagents == 0:
+        raise ValueError("Gauntlet Loop requires at least one subagent.")
+    return enabled
+
+
+def _parse_boost_setting(parts: list[str], *, current: bool) -> bool:
+    if len(parts) < _EFFORT_BOOST_ARGS:
+        return current
+    if parts[6] in {"off", "on"}:
+        return parts[6] == "on"
+    raise ValueError("BOOST must be off or on.")
+
+
+def _parse_experience_setting(parts: list[str], *, current: bool) -> bool:
+    if len(parts) < _EFFORT_EXPERIENCE_ARGS:
+        return current
+    if parts[7] in {"off", "on"}:
+        return parts[7] == "on"
+    raise ValueError("Personal experience must be off or on.")
+
+
+def _parse_subagent_limit(parts: list[str], *, current: int) -> int:
+    if len(parts) < _EFFORT_SUBAGENT_ARGS:
+        return current
+    try:
+        value = int(parts[1])
+    except ValueError as exc:
+        raise ValueError("Subagent limit must be between 0 and 16.") from exc
+    if not 0 <= value <= MAX_PARALLEL_SUBAGENTS:
+        raise ValueError("Subagent limit must be between 0 and 16.")
+    return value
 
 
 class ChatScroll(VerticalScroll):
@@ -866,6 +917,8 @@ class VibeApp(App):  # noqa: PLR0904
         self._pending_theme: str | None = None
         self._pending_model: str | None = None
         self._pending_thinking: ThinkingLevel | None = None
+        self._model_picker_target = ModelPickerTarget.MAIN
+        self._opencode_go_setup_pending = False
         self._telegram_remote: TelegramRemoteController | None = None
 
     @property
@@ -1430,10 +1483,6 @@ class VibeApp(App):  # noqa: PLR0904
 
         if not value and not self._input_queue.paused:
             return
-        if is_task_clear_request(value):
-            await self._tasks_command(cmd_args="clear")
-            return
-
         if self._banner:
             self._banner.freeze_animation()
 
@@ -1801,7 +1850,9 @@ class VibeApp(App):  # noqa: PLR0904
     async def on_model_picker_app_model_selected(
         self, message: ModelPickerApp.ModelSelected
     ) -> None:
-        if await self._is_active_model_enforced():
+        target = self._model_picker_target
+        self._model_picker_target = ModelPickerTarget.MAIN
+        if target is ModelPickerTarget.MAIN and await self._is_active_model_enforced():
             self.notify(
                 "'active_model' is enforced by your administrator. "
                 "Contact your admin to change it.",
@@ -1810,11 +1861,16 @@ class VibeApp(App):  # noqa: PLR0904
             )
             await self._switch_to_input_app()
             return
-        self._pending_model = message.alias
+        if target is ModelPickerTarget.MAIN:
+            self._pending_model = message.alias
         await self._queue.enqueue_command(
-            f"model {message.alias}",
-            command_payload=partial(self._persist_model, message.alias),
-            on_discard=partial(self._discard_model),
+            f"model {target.value} {message.alias}",
+            command_payload=partial(self._persist_model, message.alias, target),
+            on_discard=(
+                partial(self._discard_model)
+                if target is ModelPickerTarget.MAIN
+                else None
+            ),
         )
         await self._switch_to_input_app()
 
@@ -1824,25 +1880,54 @@ class VibeApp(App):  # noqa: PLR0904
         await self.query_one(ApiKeyApp).select_model(message.alias)
 
     async def on_api_key_app_submitted(self, message: ApiKeyApp.Submitted) -> None:
+        opencode_go_setup = self._opencode_go_setup_pending
+        self._opencode_go_setup_pending = False
         await self._queue.enqueue_command(
             f"api key {message.alias}",
             command_payload=partial(
-                self._persist_api_key, message.alias, message.api_key
+                self._persist_api_key,
+                message.alias,
+                message.api_key,
+                configure_opencode_go=opencode_go_setup,
             ),
         )
         await self._switch_to_input_app()
 
     async def on_api_key_app_cancelled(self, _event: ApiKeyApp.Cancelled) -> None:
+        self._opencode_go_setup_pending = False
         await self._switch_to_input_app()
 
-    async def _persist_api_key(self, alias: str, api_key: str) -> None:
+    async def _persist_api_key(
+        self, alias: str, api_key: str, *, configure_opencode_go: bool = False
+    ) -> None:
         await self.app_server.resources.config.write_api_key(alias, api_key)
+        if configure_opencode_go:
+            await self.app_server.resources.config.configure_opencode_go(
+                OPENCODE_GO_RECOMMENDED_REVIEW_MODEL
+            )
         await self._apply_config_to_ui()
         await self._mount_and_scroll(
-            UserCommandMessage(f"API key for model '{alias}' saved securely.")
+            UserCommandMessage(
+                (
+                    "OpenCode Go connected securely. DeepSeek V4 Flash is now "
+                    "the max-thinking goal advisor and reviewer; the main Mistral "
+                    "model stays selected with medium thinking. Use /model advisor "
+                    "or /model reviewer to choose another role model."
+                )
+                if configure_opencode_go
+                else f"API key for model '{alias}' saved securely."
+            )
         )
 
-    async def _persist_model(self, alias: str) -> None:
+    async def _persist_model(
+        self, alias: str, target: ModelPickerTarget = ModelPickerTarget.MAIN
+    ) -> None:
+        if target is not ModelPickerTarget.MAIN:
+            await self.app_server.resources.config.set_autonomy_model(
+                target.value, alias
+            )
+            await self._reload_config()
+            return
         try:
             await self.app_server.resources.config.update({"active_model": alias})
             await self._reload_config()
@@ -1854,6 +1939,26 @@ class VibeApp(App):  # noqa: PLR0904
 
     async def on_model_picker_app_cancelled(
         self, _event: ModelPickerApp.Cancelled
+    ) -> None:
+        self._model_picker_target = ModelPickerTarget.MAIN
+        await self._switch_to_input_app()
+
+    async def on_model_settings_app_selected(
+        self, message: ModelSettingsApp.Selected
+    ) -> None:
+        if message.action in {target.value for target in ModelPickerTarget}:
+            await self._switch_to_model_picker_app(
+                target=ModelPickerTarget(message.action)
+            )
+        elif message.action == "thinking":
+            await self._switch_to_thinking_picker_app()
+        elif message.action == "effort":
+            await self._switch_to_effort_picker_app()
+        elif message.action == "opencode-go":
+            await self._opencode_go_command()
+
+    async def on_model_settings_app_cancelled(
+        self, _event: ModelSettingsApp.Cancelled
     ) -> None:
         await self._switch_to_input_app()
 
@@ -2022,22 +2127,45 @@ class VibeApp(App):  # noqa: PLR0904
         max_parallel_subagents: int,
         accuracy: AccuracyLevel,
         web_search_activity: WebSearchActivity,
+        vibe_thinking: ThinkingLevel,
+        gauntlet_loop: bool,
+        personal_experience: bool | None = None,
         *,
+        boost_mode: bool = False,
         ultracode: bool = False,
         announce: bool = True,
     ) -> None:
+        if boost_mode:
+            level = cast(ThinkingLevel, "max")
+            max_parallel_subagents = MAX_PARALLEL_SUBAGENTS
+            accuracy = cast(AccuracyLevel, "max")
+            web_search_activity = cast(WebSearchActivity, "max")
+            vibe_thinking = cast(ThinkingLevel, "max")
+            gauntlet_loop = True
+            personal_experience = True
         await self.app_server.resources.config.set_effort(
-            level, max_parallel_subagents, accuracy, web_search_activity
+            level,
+            max_parallel_subagents,
+            accuracy,
+            web_search_activity,
+            vibe_thinking,
+            gauntlet_loop,
+            boost_mode,
+            personal_experience,
         )
         if announce:
-            mode = "UltraCode" if ultracode else "Effort"
+            mode = "UltraCode" if ultracode else "BOOST" if boost_mode else "Effort"
             await self._mount_and_scroll(
                 UserCommandMessage(
                     f"{mode} applied: thinking **{level}**, subagents "
                     f"**{max_parallel_subagents}/{MAX_PARALLEL_SUBAGENTS}**, "
                     f"accuracy **{accuracy}** (temperature "
                     f"**{ACCURACY_TEMPERATURES[accuracy]}**), web search "
-                    f"**{web_search_activity}**. "
+                    f"**{web_search_activity}**, Vibe thinking "
+                    f"**{vibe_thinking}**, Gauntlet Loop "
+                    f"**{'on' if gauntlet_loop else 'off'}**. "
+                    f"BOOST **{'on' if boost_mode else 'off'}**. "
+                    f"Experience **{'on' if personal_experience else 'off'}**. "
                     "Main, advisor, and reviewer thinking and accuracy were updated "
                     "together."
                 )
@@ -2062,6 +2190,10 @@ class VibeApp(App):  # noqa: PLR0904
                 message.max_parallel_subagents,
                 message.accuracy,
                 message.web_search_activity,
+                message.vibe_thinking,
+                message.gauntlet_loop,
+                message.personal_experience,
+                boost_mode=message.boost_mode,
                 ultracode=message.ultracode,
             ),
         )
@@ -2638,7 +2770,12 @@ class VibeApp(App):  # noqa: PLR0904
             await self._refresh_task_status()
         entry = _public_entry(event)
         if isinstance(entry, PublicEffectEntry):
-            self.query_one(TaskStatusBar).observe(entry)
+            # Startup events may arrive before the composed status bar is
+            # mounted. The normal post-mount refresh restores the same entry
+            # from history, so skipping this transient observation is safe.
+            status_bars = self.query(TaskStatusBar)
+            if status_bars:
+                status_bars.first().observe(entry)
         if isinstance(entry, PublicNoticeEntry) and isinstance(
             entry.detail, WaitingForInputNoticeDetail
         ):
@@ -3406,6 +3543,29 @@ class VibeApp(App):  # noqa: PLR0904
 """
         await self._mount_and_scroll(UserCommandMessage(status_text))
 
+    async def _show_harness(self, **_kwargs: Any) -> None:
+        runtime = self.app_server.resources.runtime
+        await runtime.refresh()
+        harness = runtime.harness
+        plugin_lines = "\n".join(
+            (
+                f"- **{plugin.name}** `{plugin.version}` — "
+                + ", ".join(plugin.capabilities)
+                + (f"; phases: {', '.join(plugin.phases)}" if plugin.phases else "")
+            )
+            for plugin in harness.plugins
+        )
+        text = (
+            "## Agent Harness\n\n"
+            f"- **Phase**: `{harness.phase}`\n"
+            f"- **Event sequence**: {harness.sequence}\n"
+            f"- **Capabilities**: {len(harness.capabilities)}\n"
+            f"- **Plugins**: {len(harness.plugins)}\n\n"
+            "### Composition\n\n"
+            f"{plugin_lines or '- No plugins registered.'}\n"
+        )
+        await self._mount_and_scroll(UserCommandMessage(text))
+
     async def _show_subagents(self, **_kwargs: Any) -> None:
         from vibe.cli.subagents import format_subagent_status
 
@@ -3414,14 +3574,17 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
     async def _tasks_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
-        if cmd_args.strip().casefold() != "clear":
+        action = cmd_args.strip().casefold()
+        task_bar = self.query_one(TaskStatusBar)
+        if not action:
+            await self._mount_and_scroll(UserCommandMessage(task_bar.plain_status()))
+            return
+        if action != "clear":
             await self._mount_and_scroll(
-                UserCommandMessage("Usage: `/tasks clear` to remove the task plan.")
+                UserCommandMessage("Usage: `/tasks` or `/tasks clear`.")
             )
             return
-        cleared = await self.query_one(TaskStatusBar).dismiss_persisted(
-            self.app_server.session_id
-        )
+        cleared = await task_bar.dismiss_persisted(self.app_server.session_id)
         message = "Task plan cleared." if cleared else "No task plan to clear."
         await self._mount_and_scroll(UserCommandMessage(message))
 
@@ -3565,10 +3728,46 @@ class VibeApp(App):  # noqa: PLR0904
         await self._reload_config()
 
     async def _show_model(self, **kwargs: Any) -> None:
-        """Switch to the model picker in the bottom panel."""
-        if self._current_bottom_app == BottomApp.ModelPicker:
+        """Open the main-model picker (kept as the direct UI helper)."""
+        await self._switch_to_model_picker_app(target=ModelPickerTarget.MAIN)
+
+    async def _model_command(self, cmd_args: str = "", **kwargs: Any) -> None:
+        """Open the model control center or a role-specific picker."""
+        target_text = cmd_args.strip().casefold()
+        if not target_text:
+            await self._switch_to_model_settings_app()
             return
-        await self._switch_to_model_picker_app()
+        try:
+            target = ModelPickerTarget(target_text)
+        except ValueError:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "Usage: /model [main|advisor|reviewer]",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+        await self._switch_to_model_picker_app(target=target)
+
+    async def _opencode_go_command(self, cmd_args: str = "", **kwargs: Any) -> None:
+        if cmd_args.strip():
+            await self._mount_and_scroll(
+                ErrorMessage("Usage: /opencode-go", collapsed=self._tools_collapsed)
+            )
+            return
+        aliases = {model.alias for model in self.config.models}
+        if OPENCODE_GO_RECOMMENDED_REVIEW_MODEL not in aliases:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "OpenCode Go models are unavailable in this configuration.",
+                    collapsed=self._tools_collapsed,
+                )
+            )
+            return
+        self._opencode_go_setup_pending = True
+        await self._switch_to_api_key_app(
+            selected_alias=OPENCODE_GO_RECOMMENDED_REVIEW_MODEL
+        )
 
     async def _show_api_key(self, cmd_args: str = "", **kwargs: Any) -> None:
         alias = cmd_args.strip()
@@ -3594,7 +3793,8 @@ class VibeApp(App):  # noqa: PLR0904
         if not parts:
             await self._switch_to_effort_picker_app()
             return
-        if parts == ["ultra"]:
+        if parts in (["boost"], ["ultra"]):
+            ultracode = parts == ["ultra"]
             await self._queue.enqueue_command(
                 "effort ultra",
                 command_payload=partial(
@@ -3603,7 +3803,11 @@ class VibeApp(App):  # noqa: PLR0904
                     MAX_PARALLEL_SUBAGENTS,
                     cast(AccuracyLevel, "max"),
                     cast(WebSearchActivity, "max"),
-                    ultracode=True,
+                    cast(ThinkingLevel, "max"),
+                    True,
+                    True,
+                    boost_mode=True,
+                    ultracode=ultracode,
                 ),
             )
             return
@@ -3612,24 +3816,22 @@ class VibeApp(App):  # noqa: PLR0904
                 ErrorMessage(
                     "Usage: /effort [thinking] [0-16] "
                     "[accuracy: low|medium|high|max] "
-                    "[web: off|low|medium|high|max]",
+                    "[web: off|low|medium|high|max] "
+                    "[vibe-thinking: off|low|medium|high|max] "
+                    "[gauntlet: off|on] [boost: off|on] "
+                    "[experience: off|on]",
                     collapsed=self._tools_collapsed,
                 )
             )
             return
         level = cast(ThinkingLevel, parts[0])
-        max_parallel_subagents = self.config.autonomy.max_parallel_subagents
-        if len(parts) >= _EFFORT_SUBAGENT_ARGS:
-            try:
-                max_parallel_subagents = int(parts[1])
-            except ValueError:
-                max_parallel_subagents = -1
-        if not 0 <= max_parallel_subagents <= MAX_PARALLEL_SUBAGENTS:
+        try:
+            max_parallel_subagents = _parse_subagent_limit(
+                parts, current=self.config.autonomy.max_parallel_subagents
+            )
+        except ValueError as exc:
             await self._mount_and_scroll(
-                ErrorMessage(
-                    "Subagent limit must be between 0 and 16.",
-                    collapsed=self._tools_collapsed,
-                )
+                ErrorMessage(str(exc), collapsed=self._tools_collapsed)
             )
             return
         accuracy = min(
@@ -3659,16 +3861,55 @@ class VibeApp(App):  # noqa: PLR0904
                 )
                 return
             web_search_activity = cast(WebSearchActivity, parts[3])
-        await self._queue.enqueue_command(
-            f"effort {level} {max_parallel_subagents} {accuracy} {web_search_activity}",
-            command_payload=partial(
-                self._persist_effort,
-                level,
-                max_parallel_subagents,
-                accuracy,
-                web_search_activity,
-            ),
-        )
+        vibe_thinking = self.config.autonomy.vibe_thinking
+        valid_vibe_thinking = True
+        if len(parts) >= _EFFORT_VIBE_THINKING_ARGS:
+            if parts[4] not in THINKING_LEVELS:
+                valid_vibe_thinking = False
+                await self._mount_and_scroll(
+                    ErrorMessage(
+                        "Vibe thinking must be off, low, medium, high, or max.",
+                        collapsed=self._tools_collapsed,
+                    )
+                )
+            else:
+                vibe_thinking = cast(ThinkingLevel, parts[4])
+        if valid_vibe_thinking:
+            try:
+                gauntlet_loop = _parse_gauntlet_setting(
+                    parts,
+                    current=self.config.autonomy.gauntlet_loop,
+                    max_parallel_subagents=max_parallel_subagents,
+                )
+                boost_mode = _parse_boost_setting(
+                    parts, current=self.config.autonomy.boost_mode
+                )
+                personal_experience = _parse_experience_setting(
+                    parts, current=self.config.autonomy.personal_experience
+                )
+            except ValueError as exc:
+                await self._mount_and_scroll(
+                    ErrorMessage(str(exc), collapsed=self._tools_collapsed)
+                )
+            else:
+                await self._queue.enqueue_command(
+                    f"effort {level} {max_parallel_subagents} {accuracy} "
+                    f"{web_search_activity} {vibe_thinking} "
+                    f"{'on' if gauntlet_loop else 'off'} "
+                    f"{'on' if boost_mode else 'off'} "
+                    f"{'on' if personal_experience else 'off'}",
+                    command_payload=partial(
+                        self._persist_effort,
+                        level,
+                        max_parallel_subagents,
+                        accuracy,
+                        web_search_activity,
+                        vibe_thinking,
+                        gauntlet_loop,
+                        personal_experience,
+                        boost_mode=boost_mode,
+                    ),
+                )
 
     async def _show_theme(self, **kwargs: Any) -> None:
         if self._current_bottom_app == BottomApp.ThemePicker:
@@ -4204,7 +4445,32 @@ class VibeApp(App):  # noqa: PLR0904
             f"{instruction}\n\nUser objective:\n{objective}"
         )
 
-    async def _ultracode_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
+    async def _boost_command(self, cmd_args: str = "", **_kwargs: Any) -> None:
+        if not cmd_args.strip():
+            await self._switch_to_effort_picker_app(boost=True)
+            return
+        await self._persist_effort(
+            cast(ThinkingLevel, "max"),
+            MAX_PARALLEL_SUBAGENTS,
+            cast(AccuracyLevel, "max"),
+            cast(WebSearchActivity, "max"),
+            cast(ThinkingLevel, "max"),
+            True,
+            boost_mode=True,
+            announce=False,
+        )
+        await self._run_feature_goal(
+            cmd_args,
+            usage="Usage: /boost <objective>",
+            instruction=(
+                "BOOST mode is active. Make a compact dependency plan immediately. "
+                "Delegate independent inspection and verification to a maximum bounded "
+                "swarm, serialize mutating work, integrate results at root, run decisive "
+                "checks, and require an evidence-backed reviewer verdict before completion."
+            ),
+        )
+
+    async def _ultracode_command(self, cmd_args: str = "", **kwargs: Any) -> None:
         if not cmd_args.strip():
             await self._switch_to_effort_picker_app(ultracode=True)
             return
@@ -4213,6 +4479,9 @@ class VibeApp(App):  # noqa: PLR0904
             MAX_PARALLEL_SUBAGENTS,
             cast(AccuracyLevel, "max"),
             cast(WebSearchActivity, "max"),
+            cast(ThinkingLevel, "max"),
+            True,
+            boost_mode=True,
             ultracode=True,
             announce=False,
         )
@@ -4220,10 +4489,10 @@ class VibeApp(App):  # noqa: PLR0904
             cmd_args,
             usage="Usage: /ultracode <objective>",
             instruction=(
-                "Ultracode mode is active. Make a compact dependency plan immediately. "
-                "Delegate independent inspection and verification to a maximum bounded "
-                "swarm, serialize mutating work, integrate results at root, run decisive "
-                "checks, and require an evidence-backed reviewer verdict before completion."
+                "UltraCode is active with BOOST intelligence. Build a compact "
+                "dependency plan immediately, use the maximum bounded swarm for "
+                "independent work, serialize mutations, integrate at root, and require "
+                "an evidence-backed reviewer verdict before completion."
             ),
         )
 
@@ -4552,7 +4821,9 @@ class VibeApp(App):  # noqa: PLR0904
         field = next((f for f in response.fields if f.name == "active_model"), None)
         return field is not None and field.origin == ADMIN_LAYER
 
-    async def _switch_to_model_picker_app(self) -> None:
+    async def _switch_to_model_picker_app(
+        self, *, target: ModelPickerTarget = ModelPickerTarget.MAIN
+    ) -> None:
         if self._current_bottom_app == BottomApp.ModelPicker:
             return
 
@@ -4560,13 +4831,53 @@ class VibeApp(App):  # noqa: PLR0904
             ModelOption(alias=model.alias, display_name=model.display_name)
             for model in self.config.models
         ]
-        current_model = self._effective_model_alias
+        self._model_picker_target = target
+        if target is ModelPickerTarget.MAIN:
+            current_model = self._effective_model_alias
+            is_pinned = self.config.active_model_pinned
+            default_display_name = self.config.default_model_display_name
+        elif target is ModelPickerTarget.ADVISOR:
+            configured = self.config.autonomy.goal_advisor_model
+            current_model = configured or self._effective_model_alias
+            is_pinned = bool(configured)
+            default_display_name = (
+                f"Main: {self.config.model_display_name(self._effective_model_alias)}"
+            )
+        else:
+            configured = self.config.autonomy.reviewer_model
+            advisor = (
+                self.config.autonomy.goal_advisor_model or self._effective_model_alias
+            )
+            current_model = configured or advisor
+            is_pinned = bool(configured)
+            default_display_name = f"Advisor: {self.config.model_display_name(advisor)}"
+        picker = ModelPickerApp(
+            models=models,
+            current_model=current_model,
+            is_pinned=is_pinned,
+            default_display_name=default_display_name,
+            title=f"Select {target.value.title()} Model",
+        )
+        if self._current_bottom_app == BottomApp.ModelSettings:
+            await self._replace_bottom_app(picker)
+            return
+        await self._switch_from_input(picker)
+
+    async def _switch_to_model_settings_app(self) -> None:
+        if self._current_bottom_app == BottomApp.ModelSettings:
+            return
+        advisor_alias = (
+            self.config.autonomy.goal_advisor_model or self._effective_model_alias
+        )
+        reviewer_alias = self.config.autonomy.reviewer_model or advisor_alias
         await self._switch_from_input(
-            ModelPickerApp(
-                models=models,
-                current_model=current_model,
-                is_pinned=self.config.active_model_pinned,
-                default_display_name=self.config.default_model_display_name,
+            ModelSettingsApp(
+                main_model=self.config.model_display_name(self._effective_model_alias),
+                advisor_model=self.config.model_display_name(advisor_alias),
+                reviewer_model=self.config.model_display_name(reviewer_alias),
+                thinking=self._effective_thinking,
+                vibe_thinking=self.config.autonomy.vibe_thinking,
+                max_subagents=self.config.autonomy.max_parallel_subagents,
             )
         )
 
@@ -4578,34 +4889,46 @@ class VibeApp(App):  # noqa: PLR0904
         widget = ApiKeyApp(models, selected_alias=selected_alias)
         if self._current_bottom_app == BottomApp.ApiKey:
             return
+        if self._current_bottom_app == BottomApp.ModelSettings:
+            await self._replace_bottom_app(widget)
+            return
         await self._switch_from_input(widget)
 
     async def _switch_to_thinking_picker_app(self) -> None:
         if self._current_bottom_app == BottomApp.ThinkingPicker:
             return
 
-        current_thinking = self._effective_thinking
-        await self._switch_from_input(
-            ThinkingPickerApp(
-                thinking_levels=THINKING_LEVELS, current_thinking=current_thinking
-            )
+        picker = ThinkingPickerApp(
+            thinking_levels=THINKING_LEVELS, current_thinking=self._effective_thinking
         )
+        if self._current_bottom_app == BottomApp.ModelSettings:
+            await self._replace_bottom_app(picker)
+            return
+        await self._switch_from_input(picker)
 
-    async def _switch_to_effort_picker_app(self, *, ultracode: bool = False) -> None:
+    async def _switch_to_effort_picker_app(
+        self, *, boost: bool = False, ultracode: bool = False
+    ) -> None:
         if self._current_bottom_app == BottomApp.EffortPicker:
             return
 
-        await self._switch_from_input(
-            EffortPickerApp(
-                current_thinking=self._effective_thinking,
-                current_max_parallel_subagents=(
-                    self.config.autonomy.max_parallel_subagents
-                ),
-                current_temperature=self.config.active_model.temperature,
-                current_web_search_activity=(self.config.autonomy.web_search_activity),
-                initial_row=4 if ultracode else 0,
-            )
+        picker = EffortPickerApp(
+            current_thinking=self._effective_thinking,
+            current_vibe_thinking=self.config.autonomy.vibe_thinking,
+            current_max_parallel_subagents=(
+                self.config.autonomy.max_parallel_subagents
+            ),
+            current_temperature=self.config.active_model.temperature,
+            current_web_search_activity=(self.config.autonomy.web_search_activity),
+            current_gauntlet_loop=self.config.autonomy.gauntlet_loop,
+            current_boost_mode=self.config.autonomy.boost_mode,
+            current_personal_experience=(self.config.autonomy.personal_experience),
+            initial_row=8 if ultracode else 7 if boost else 0,
         )
+        if self._current_bottom_app == BottomApp.ModelSettings:
+            await self._replace_bottom_app(picker)
+            return
+        await self._switch_from_input(picker)
 
     async def _switch_to_log_level_picker_app(self) -> None:
         if self._current_bottom_app == BottomApp.LogLevelPicker:
@@ -4688,6 +5011,7 @@ class VibeApp(App):  # noqa: PLR0904
             BottomApp.EffortPicker: EffortPickerApp,
             BottomApp.LogLevelPicker: LogLevelPickerApp,
             BottomApp.ModelPicker: ModelPickerApp,
+            BottomApp.ModelSettings: ModelSettingsApp,
             BottomApp.ThemePicker: ThemePickerApp,
             BottomApp.ThinkingPicker: ThinkingPickerApp,
             BottomApp.ProxySetup: ProxySetupApp,
@@ -4754,6 +5078,14 @@ class VibeApp(App):  # noqa: PLR0904
         try:
             model_picker = self.query_one(ModelPickerApp)
             model_picker.post_message(ModelPickerApp.Cancelled())
+        except Exception:
+            pass
+        self._last_escape_time = None
+
+    def _handle_model_settings_app_escape(self) -> None:
+        try:
+            settings = self.query_one(ModelSettingsApp)
+            settings.post_message(ModelSettingsApp.Cancelled())
         except Exception:
             pass
         self._last_escape_time = None
@@ -5068,6 +5400,7 @@ class VibeApp(App):  # noqa: PLR0904
             BottomApp.Question: self._handle_question_app_escape,
             BottomApp.LogLevelPicker: self._handle_log_level_picker_app_escape,
             BottomApp.ModelPicker: self._handle_model_picker_app_escape,
+            BottomApp.ModelSettings: self._handle_model_settings_app_escape,
             BottomApp.ThemePicker: self._handle_theme_picker_app_escape,
             BottomApp.ThinkingPicker: self._handle_thinking_picker_app_escape,
             BottomApp.EffortPicker: self._handle_effort_picker_app_escape,
@@ -5124,6 +5457,8 @@ class VibeApp(App):  # noqa: PLR0904
     def _try_interrupt_running_job(self) -> bool:
         interrupted = False
         if self._bash_task and not self._bash_task.done():
+            if self._loading_widget is not None:
+                self._loading_widget.set_status("Stopping")
             self._bash_task.cancel()
             interrupted = True
         if self._agent_job_active():
@@ -5252,9 +5587,11 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
     async def _refresh_task_status(self) -> None:
-        await self.query_one(TaskStatusBar).restore_persisted(
-            self.app_server.session_id, self.app_server.history
-        )
+        status_bars = self.query(TaskStatusBar)
+        if status_bars:
+            await status_bars.first().restore_persisted(
+                self.app_server.session_id, self.app_server.history
+            )
 
     def _on_profile_changed(self) -> None:
         self._refresh_profile_widgets()
@@ -5860,7 +6197,9 @@ def run_textual_ui(
     async def run() -> SessionExitSummary | None:
         app_server = await start_app_server()
         effective_startup = startup or StartupOptions()
-        update_notifier = PyPIUpdateGateway(project_name="mistral-vibe")
+        # An upstream PyPI update would replace this fork because the Python
+        # distribution name is intentionally retained for compatibility.
+        update_notifier = None
         vscode_extension_promo_repository = FileSystemVscodeExtensionPromoRepository()
         vscode_extension_promo = VscodeExtensionPromo(
             repository=vscode_extension_promo_repository,

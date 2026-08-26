@@ -66,8 +66,12 @@ class AutonomyConfigView(ProtocolModel):
     aggressiveness: str
     goal_advisor_model: str
     reviewer_model: str
+    vibe_thinking: ThinkingLevel
     max_parallel_subagents: int
     web_search_activity: WebSearchActivity
+    gauntlet_loop: bool
+    boost_mode: bool
+    personal_experience: bool
 
 
 class ConfigView(ProtocolModel):

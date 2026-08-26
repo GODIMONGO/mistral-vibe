@@ -89,6 +89,7 @@ class ClientSessionState:
         self.hooks_count = snapshot.hooks_count
         self.connectors = snapshot.connectors
         self.mcp = snapshot.mcp
+        self.harness = snapshot.harness
         self.state.session.model = snapshot.config.active_model.alias
         self.state.session.agent = snapshot.active_agent
         self.state.session.token_usage = snapshot.stats.token_usage

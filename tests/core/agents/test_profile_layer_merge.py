@@ -66,6 +66,7 @@ def test_plan_profile_scopes_file_tools_to_plans_dir(
 ) -> None:
     plans_allowlist = PLAN.overrides["tools"]["read_file"]["allowlist"]
     assert _merged_delta(orchestrator, base, "plan") == {
+        "enabled_tools": [[], PLAN.overrides["enabled_tools"]],
         "tools/edit": [
             "__MISSING__",
             {"permission": "never", "allowlist": plans_allowlist},
@@ -101,7 +102,10 @@ def test_explore_profile_restricts_tools_and_prompt(
     orchestrator: ConfigOrchestrator[VibeConfigSchema], base: dict[str, Any]
 ) -> None:
     delta = _merged_delta(orchestrator, base, "explore")
-    assert delta["enabled_tools"] == [[], ["grep", "read_file", "skill", "web_search"]]
+    assert delta["enabled_tools"] == [
+        [],
+        ["deep_wiki", "grep", "read_file", "skill", "web_search"],
+    ]
     assert delta["system_prompt_id"][1] == "explore"
     assert set(delta) == {"enabled_tools", "system_prompt_id"}
 

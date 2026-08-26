@@ -31,13 +31,16 @@ class _FakeComplete:
         self._stats = stats
         self.calls: list[dict] = []
 
-    async def __call__(self, *, model, messages, tools, tool_choice, call_type):
+    async def __call__(
+        self, *, model, messages, tools, tool_choice, call_type, max_tokens=None
+    ):
         self.calls.append({
             "model": model,
             "messages": list(messages),
             "tools": tools,
             "tool_choice": tool_choice,
             "call_type": call_type,
+            "max_tokens": max_tokens,
         })
         item = self._results.pop(0)
         if isinstance(item, Exception):
@@ -123,6 +126,7 @@ async def test_primary_success_appends_compaction_boundary() -> None:
 
     assert summary == "all done"
     assert len(complete.calls) == 1  # no fallback
+    assert complete.calls[0]["max_tokens"] == 4096
     assert not telemetry.failures
     assert [m.role for m in messages] == [
         Role.system,

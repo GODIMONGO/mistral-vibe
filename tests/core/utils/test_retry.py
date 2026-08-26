@@ -14,9 +14,13 @@ from vibe.core.utils.retry import (
 )
 
 
-def _make_http_status_error(status_code: int) -> httpx.HTTPStatusError:
+def _make_http_status_error(
+    status_code: int, *, headers: dict[str, str] | None = None
+) -> httpx.HTTPStatusError:
     response = httpx.Response(
-        status_code=status_code, request=httpx.Request("GET", "https://example.com")
+        status_code=status_code,
+        request=httpx.Request("GET", "https://example.com"),
+        headers=headers,
     )
     return httpx.HTTPStatusError(
         message=f"Error {status_code}", request=response.request, response=response
@@ -174,6 +178,43 @@ class TestAsyncRetry:
         with pytest.raises(httpx.ReadTimeout):
             await call()
         assert attempts == 3
+
+    @pytest.mark.asyncio
+    async def test_stops_before_retry_delay_exceeds_elapsed_budget(self) -> None:
+        attempts = 0
+
+        @async_retry(tries=3, delay_seconds=1.0, max_elapsed_seconds=0.0)
+        async def call() -> str:
+            nonlocal attempts
+            attempts += 1
+            raise httpx.ReadTimeout("timeout", request=_make_request())
+
+        with pytest.raises(httpx.ReadTimeout):
+            await call()
+        assert attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_honors_numeric_retry_after(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        attempts = 0
+        delays: list[float] = []
+
+        async def record_sleep(delay: float) -> None:
+            delays.append(delay)
+
+        monkeypatch.setattr("vibe.core.utils.retry.asyncio.sleep", record_sleep)
+
+        @async_retry(tries=2, delay_seconds=0.1, max_elapsed_seconds=10.0)
+        async def call() -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise _make_http_status_error(429, headers={"Retry-After": "7"})
+            return "ok"
+
+        assert await call() == "ok"
+        assert delays == [7.0]
 
 
 class TestAsyncGeneratorRetry:

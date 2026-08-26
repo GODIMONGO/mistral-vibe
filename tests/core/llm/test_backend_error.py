@@ -6,11 +6,11 @@ from tests.constants import CHAT_COMPLETIONS_PATH
 from vibe.core.llm.exceptions import BackendError, PayloadSummary
 
 
-def _make_payload_summary() -> PayloadSummary:
+def _make_payload_summary(*, approx_chars: int = 10) -> PayloadSummary:
     return PayloadSummary(
         model="test-model",
         message_count=1,
-        approx_chars=10,
+        approx_chars=approx_chars,
         temperature=0.7,
         has_tools=False,
         tool_choice=None,
@@ -62,9 +62,24 @@ class TestBackendErrorFmt:
 
     def test_rate_limit_short_circuits(self) -> None:
         err = _make_error(status=429)
-        assert (
-            str(err) == "Rate limit exceeded. Please wait a moment before trying again."
+        assert str(err) == "Rate limit exceeded.\nPlease wait before trying again."
+
+    def test_rate_limit_preserves_provider_message_and_retry_after(self) -> None:
+        err = BackendError(
+            provider="test-provider",
+            endpoint="/chat",
+            status=429,
+            reason="Too Many Requests",
+            headers={"Retry-After": "17"},
+            body_text='{"message":"capacity exhausted"}',
+            parsed_error="capacity exhausted",
+            model="test-model",
+            payload_summary=_make_payload_summary(),
         )
+
+        message = str(err)
+        assert "Provider message: capacity exhausted" in message
+        assert "Retry after: 17" in message
 
     def test_request_id_from_headers(self) -> None:
         err = _make_error(status=500, headers={"x-request-id": "req-123"})
@@ -96,6 +111,48 @@ class TestBackendErrorIsContextTooLong:
     def test_false_on_unrelated_status(self) -> None:
         err = _make_error(status=500, body_text="context too long")
         assert not err.is_context_too_long
+
+
+class TestBackendErrorIsLargePayloadTransportError:
+    def test_network_error_with_large_payload_is_recoverable(self) -> None:
+        err = BackendError(
+            provider="test-provider",
+            endpoint=CHAT_COMPLETIONS_PATH,
+            status=None,
+            reason="Server disconnected without sending a response.",
+            headers={},
+            body_text="",
+            parsed_error="Network error",
+            model="test-model",
+            payload_summary=_make_payload_summary(approx_chars=213_585),
+        )
+
+        assert err.is_large_payload_transport_error
+
+    @pytest.mark.parametrize(
+        ("status", "parsed_error", "approx_chars"),
+        [
+            (None, "Network error", 159_999),
+            (500, "Network error", 213_585),
+            (None, "some provider error", 213_585),
+        ],
+    )
+    def test_unrelated_errors_are_not_recoverable(
+        self, status: int | None, parsed_error: str, approx_chars: int
+    ) -> None:
+        err = BackendError(
+            provider="test-provider",
+            endpoint=CHAT_COMPLETIONS_PATH,
+            status=status,
+            reason="failure",
+            headers={},
+            body_text="",
+            parsed_error=parsed_error,
+            model="test-model",
+            payload_summary=_make_payload_summary(approx_chars=approx_chars),
+        )
+
+        assert not err.is_large_payload_transport_error
 
     def test_false_on_max_tokens(self) -> None:
         # max-tokens truncation must not be misread as context-too-long

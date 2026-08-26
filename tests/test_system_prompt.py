@@ -68,6 +68,46 @@ async def test_global_memory_is_not_injected_without_user_source(
     assert "Private user preference" not in prompt
 
 
+def test_automatic_memory_policy_is_injected_when_enabled(
+    build_config: ConfigBuilder, load_orchestrator: OrchestratorLoader[VibeConfigSchema]
+) -> None:
+    config = build_config(
+        include_project_context=False,
+        include_prompt_detail=False,
+        include_model_info=False,
+        include_commit_signature=False,
+        tools={"memory": {"auto_remember": True}},
+    )
+    prompt = get_universal_system_prompt(
+        config,
+        SkillManager(lambda: config),
+        AgentManager(load_orchestrator(config)),
+        tool_manager=ToolManager(lambda: config),
+    )
+
+    assert "## Automatic Memory" in prompt
+    assert "without waiting for a /memory command" in prompt
+
+
+def test_automatic_memory_policy_is_absent_by_default(
+    build_config: ConfigBuilder, load_orchestrator: OrchestratorLoader[VibeConfigSchema]
+) -> None:
+    config = build_config(
+        include_project_context=False,
+        include_prompt_detail=False,
+        include_model_info=False,
+        include_commit_signature=False,
+    )
+    prompt = get_universal_system_prompt(
+        config,
+        SkillManager(lambda: config),
+        AgentManager(load_orchestrator(config)),
+        tool_manager=ToolManager(lambda: config),
+    )
+
+    assert "Automatic Memory" not in prompt
+
+
 def _hide_standard_git_installs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ProgramFiles", raising=False)
     monkeypatch.delenv("ProgramFiles(x86)", raising=False)

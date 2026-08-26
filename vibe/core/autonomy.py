@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum, auto
 import json
-import re
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -89,6 +88,22 @@ class AutonomyPlan(BaseModel):
         ]
 
 
+class AutonomyIntent(StrEnum):
+    """Whether a user turn needs the autonomous planning pipeline."""
+
+    DIRECT = auto()
+    AUTONOMOUS = auto()
+
+
+def parse_autonomy_intent(response: str) -> AutonomyIntent | None:
+    """Parse the deliberately tiny output contract of the intent model call."""
+    normalized = response.strip().strip("`*_.: ").upper()
+    try:
+        return AutonomyIntent(normalized.lower())
+    except ValueError:
+        return None
+
+
 def parse_advisor_plan(response: str, objective: str) -> AutonomyPlan:
     start = response.find(AUTONOMY_PLAN_START)
     end = response.find(AUTONOMY_PLAN_END, start + len(AUTONOMY_PLAN_START))
@@ -104,36 +119,6 @@ def parse_advisor_plan(response: str, objective: str) -> AutonomyPlan:
         fallback = "Complete and verify the user's objective"
     return AutonomyPlan(
         tasks=[AutonomyPlanTask(id="execute-goal", content=fallback, agent="worker")]
-    )
-
-
-_COMPUTER_CAPABILITY_QUESTION = re.compile(
-    r"^(?:(?:а\s+)?(?:ты\s+)?(?:можешь(?:\s+ли\s+ты)?|умеешь)\s+"
-    r"(?:полноценно\s+)?управлять\s+(?:моим\s+)?(?:пк|компьютером|рабочим\s+столом)"
-    r"|can\s+you\s+(?:fully\s+)?control\s+(?:my\s+)?(?:pc|computer|desktop))"
-    r"[\s?.!]*$",
-    re.IGNORECASE,
-)
-
-_TRIVIAL_CONVERSATION = re.compile(
-    r"^(?:hi|hello|hey|thanks|thank\s+you|ok(?:ay)?|"
-    r"привет|здравствуй(?:те)?|спасибо|ок|окей|понял(?:а)?)"
-    r"[\s,.!?👋]*$",
-    re.IGNORECASE,
-)
-
-
-def is_computer_control_capability_question(objective: str) -> bool:
-    """Return whether *objective* only asks if desktop control is available."""
-    normalized = " ".join(objective.split())
-    return bool(_COMPUTER_CAPABILITY_QUESTION.fullmatch(normalized))
-
-
-def should_skip_autonomy(objective: str) -> bool:
-    """Return whether a prompt is conversational and needs no autonomous plan."""
-    normalized = " ".join(objective.split())
-    return bool(_TRIVIAL_CONVERSATION.fullmatch(normalized)) or bool(
-        _COMPUTER_CAPABILITY_QUESTION.fullmatch(normalized)
     )
 
 
@@ -344,7 +329,10 @@ class AutonomyCoordinator:
                     for line in lines
                 )
                 self._reviewer_passed = (
-                    bool(lines) and lines[-1] == REVIEW_PASS_MARKER and checked_evidence
+                    bool(lines)
+                    and lines[-1] == REVIEW_PASS_MARKER
+                    and checked_evidence
+                    and result.evidence_tool_calls > 0
                 )
 
     @staticmethod
@@ -390,10 +378,10 @@ __all__ = [
     "AutonomyCoordinator",
     "AutonomyDecision",
     "AutonomyDecisionKind",
+    "AutonomyIntent",
     "AutonomyPlan",
     "AutonomyPlanTask",
     "AutonomyPolicy",
-    "is_computer_control_capability_question",
     "parse_advisor_plan",
-    "should_skip_autonomy",
+    "parse_autonomy_intent",
 ]

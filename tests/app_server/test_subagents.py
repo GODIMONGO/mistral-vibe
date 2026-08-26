@@ -64,14 +64,21 @@ from vibe.utils.tool_presentation import (
 )
 
 
-def _task_call(agent: str = "explore") -> ToolCall:
+def _task_call(
+    agent: str = "explore",
+    *,
+    max_turns: int | None = None,
+    timeout_seconds: float | None = None,
+) -> ToolCall:
+    arguments: dict[str, Any] = {"task": "Inspect the project", "agent": agent}
+    if max_turns is not None:
+        arguments["max_turns"] = max_turns
+    if timeout_seconds is not None:
+        arguments["timeout_seconds"] = timeout_seconds
     return ToolCall(
         id="task-1",
         index=0,
-        function=FunctionCall(
-            name="task",
-            arguments=json.dumps({"task": "Inspect the project", "agent": agent}),
-        ),
+        function=FunctionCall(name="task", arguments=json.dumps(arguments)),
     )
 
 
@@ -580,6 +587,48 @@ async def test_child_callbacks_round_trip_using_child_session_id(
         assert question.state.output["answers"] == [
             {"question": "Ship it?", "answer": "Yes", "isOther": False}
         ]
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_task_deadline_interrupts_a_hung_subagent(monkeypatch) -> None:
+    child_backend = BlockingBackend()
+    monkeypatch.setattr(
+        "vibe.core.agent_loop._loop.create_backend", lambda **_: child_backend
+    )
+    parent = build_test_agent_loop(
+        config=_config(),
+        backend=FakeBackend([
+            [
+                mock_llm_chunk(
+                    content="",
+                    tool_calls=[_task_call(max_turns=3, timeout_seconds=0.05)],
+                )
+            ],
+            [mock_llm_chunk(content="Reported bounded failure")],
+        ]),
+        enable_streaming=True,
+    )
+    client = start_test_app_server(parent)
+    session = await attach_test_app_server_session(client)
+
+    try:
+        await asyncio.wait_for(
+            _consume(session.act("Delegate with a deadline")), timeout=3
+        )
+        await asyncio.wait_for(child_backend.stopped.wait(), timeout=3)
+        task_effect = next(
+            entry
+            for entry in session.history
+            if isinstance(entry, PublicEffectEntry) and entry.detail.tool_name == "task"
+        )
+        assert isinstance(task_effect.state, CompletedEffectState)
+        assert isinstance(task_effect.state.output, dict)
+        assert task_effect.state.output["completed"] is False
+        response = task_effect.state.output["response"]
+        assert isinstance(response, str)
+        assert "deadline exceeded" in response
     finally:
         await session.close()
 

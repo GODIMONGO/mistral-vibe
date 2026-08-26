@@ -47,7 +47,7 @@ def render_skill_result(skill_info: SkillInfo) -> SkillResult:
                     continue
                 if entry.name == "SKILL.md":
                     continue
-                files.append(str(entry.relative_to(skill_dir)))
+                files.append(entry.relative_to(skill_dir).as_posix())
                 if len(files) >= _MAX_LISTED_FILES:
                     break
         except OSError:

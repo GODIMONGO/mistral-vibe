@@ -76,6 +76,8 @@ DEFAULT_MAX_POLL_SECONDS = 300.0
 KILL_GRACE_SECONDS = 2.0
 FORCE_TERMINATION_TIMEOUT_SECONDS = 2.0
 READER_SELECT_SECONDS = 0.1
+DEFAULT_MAX_SESSION_LOG_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_TOTAL_LOG_BYTES = 512 * 1024 * 1024
 FOREGROUND_STREAM_SECONDS = 0.2
 
 CONTROL_SEQUENCES: dict[str, bytes] = {
@@ -553,6 +555,13 @@ def _safe_stat_size(path: Path) -> int:
         return 0
 
 
+def _safe_stat_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 class TerminalSessionManager:
     def __init__(
         self,
@@ -560,12 +569,16 @@ class TerminalSessionManager:
         *,
         shell_family: str = "posix",
         session_prefix: str = "bash",
+        max_session_log_bytes: int = DEFAULT_MAX_SESSION_LOG_BYTES,
+        max_total_log_bytes: int = DEFAULT_MAX_TOTAL_LOG_BYTES,
     ) -> None:
         self._backend = backend or managed_shell_backend.create_managed_shell_backend(
             shell_family
         )
         self.shell_family = shell_family
         self.session_prefix = session_prefix
+        self.max_session_log_bytes = max_session_log_bytes
+        self.max_total_log_bytes = max_total_log_bytes
         self.base_dir = VIBE_HOME.path / "shell-tool"
         self.sessions_dir = self.base_dir / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -573,6 +586,7 @@ class TerminalSessionManager:
         self._orphaned: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         self._load_orphaned_manifests()
+        self._enforce_total_log_quota()
 
     def start(
         self,
@@ -587,6 +601,8 @@ class TerminalSessionManager:
             raise ManagedShellError("command must not be empty")
         if not cwd.is_dir():
             raise ManagedShellError(f"cwd is not a directory: {cwd}")
+
+        self._enforce_total_log_quota()
 
         merged_env = self._build_env(env)
 
@@ -893,10 +909,44 @@ class TerminalSessionManager:
 
     def _append_output(self, session: TerminalSession, data: bytes) -> None:
         with session.condition:
+            current_size = _safe_stat_size(session.output_path)
+            remaining = self.max_session_log_bytes - current_size
+            if remaining <= 0:
+                raise ManagedShellError(
+                    "managed shell log quota reached "
+                    f"({self.max_session_log_bytes} bytes); process terminated"
+                )
             with session.output_path.open("ab") as handle:
-                handle.write(data)
+                handle.write(data[:remaining])
             session.updated_at = time.time()
             session.condition.notify_all()
+            if len(data) > remaining:
+                raise ManagedShellError(
+                    "managed shell log quota reached "
+                    f"({self.max_session_log_bytes} bytes); process terminated"
+                )
+
+    def _enforce_total_log_quota(self) -> None:
+        logs = list(self.sessions_dir.glob("*.log"))
+        total = sum(_safe_stat_size(path) for path in logs)
+        if total <= self.max_total_log_bytes:
+            return
+        active_paths = {
+            session.output_path.resolve() for session in self._sessions.values()
+        }
+        candidates = sorted(
+            (path for path in logs if path.resolve() not in active_paths),
+            key=_safe_stat_mtime,
+        )
+        for path in candidates:
+            if total <= self.max_total_log_bytes:
+                break
+            size = _safe_stat_size(path)
+            session_id = path.stem
+            path.unlink(missing_ok=True)
+            path.with_suffix(".json").unlink(missing_ok=True)
+            self._orphaned.pop(session_id, None)
+            total -= size
 
     def _terminate_sessions(
         self, sessions: list[TerminalSession], *, force: bool = False
@@ -1288,8 +1338,11 @@ class ExperimentalBashArgs(BaseModel):
         description="Foreground wait time before soft or hard timeout handling.",
     )
     hard_timeout: bool = Field(
-        default=False,
-        description="Kill the process group when timeout_seconds expires.",
+        default=True,
+        description=(
+            "Kill the process group when timeout_seconds expires. Disable only "
+            "when intentionally handing a foreground process over to a live session."
+        ),
     )
     cwd: ToolPath | None = Field(
         default=None, description="Working directory override."
@@ -1693,10 +1746,18 @@ class ExperimentalBash(
 
     @classmethod
     def format_call_display(cls, args: ExperimentalBashArgs) -> ToolCallDisplay:
+        requested_timeout = (
+            float(args.timeout) if args.timeout is not None else args.timeout_seconds
+        )
+        timeout_suffix = (
+            f" [kill after {requested_timeout:g}s]"
+            if requested_timeout is not None and args.hard_timeout
+            else ""
+        )
         return ToolCallDisplay(
             summary=f"bash: {args.command}",
             verb="Running",
-            message=args.command,
+            message=args.command + timeout_suffix,
             settled_verb="Ran",
             settled_message=args.command,
         )

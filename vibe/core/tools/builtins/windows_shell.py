@@ -849,10 +849,18 @@ class WindowsShell(
 
     @classmethod
     def format_call_display(cls, args: WindowsShellArgs) -> ToolCallDisplay:
+        requested_timeout = (
+            float(args.timeout) if args.timeout is not None else args.timeout_seconds
+        )
+        timeout_suffix = (
+            f" [kill after {requested_timeout:g}s]"
+            if requested_timeout is not None
+            else ""
+        )
         return ToolCallDisplay(
             summary=f"powershell: {args.command}",
             verb="Running",
-            message=args.command,
+            message=args.command + timeout_suffix,
             settled_verb="Ran",
             settled_message=args.command,
         )

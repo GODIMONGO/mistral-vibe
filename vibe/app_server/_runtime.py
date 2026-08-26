@@ -1005,6 +1005,9 @@ def build_runtime_snapshot(
     config_orchestrator: ConfigOrchestrator[VibeConfigSchema],
     harness_files: HarnessFilesManager,
 ) -> RuntimeSnapshot:
+    from vibe.app_server._projection import project_harness
+    from vibe.core.harness import create_default_harness
+
     config = config_orchestrator.config
     agents = AgentManager(
         config_orchestrator,
@@ -1026,6 +1029,7 @@ def build_runtime_snapshot(
         hooks_count=0,
         connectors=ConnectorCounts(),
         mcp=MCPState(),
+        harness=project_harness(create_default_harness()),
     )
 
 

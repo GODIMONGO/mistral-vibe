@@ -27,6 +27,7 @@ from vibe.app_server.models import (
     HookScope,
     HookSeverity,
     JsonPatchOperation,
+    MemoryStatusNoticeDetail,
     NoticeDetail,
     OpenCallbackState,
     PlanReviewEndedNoticeDetail,
@@ -67,6 +68,7 @@ from vibe.core.types import (
     CompactEndEvent,
     CompactStartEvent,
     ContextClearedEvent,
+    MemoryStatusEvent,
     PlanReviewEndedEvent,
     PlanReviewRequestedEvent,
     ReasoningEvent,
@@ -144,6 +146,7 @@ class EventProjector:
                 | ContextClearedEvent()
                 | PlanReviewRequestedEvent()
                 | PlanReviewEndedEvent()
+                | MemoryStatusEvent()
             ):
                 updates = [self._project_notice(event)]
             case _:
@@ -595,16 +598,26 @@ class EventProjector:
     def _project_reasoning(self, event: ReasoningEvent) -> ProjectedUpdate:
         key = event.message_id or "reasoning"
         if entry_id := self._reasoning_entries.get(key):
-            return self._patch(
-                entry_id,
-                [JsonPatchOperation(op="append", path="/text", value=event.content)],
-            )
+            entry = self._entries[entry_id]
+            if not isinstance(entry, PublicReasoningEntry):
+                raise TypeError(f"Expected reasoning entry, got {type(entry).__name__}")
+            operations = [
+                JsonPatchOperation(op="append", path="/text", value=event.content)
+            ]
+            if event.status_text != entry.status_text:
+                operations.append(
+                    JsonPatchOperation(
+                        op="replace", path="/statusText", value=event.status_text
+                    )
+                )
+            return self._patch(entry_id, operations)
         entry_id = event.message_id or str(uuid4())
         self._reasoning_entries[key] = entry_id
         return self._add(
             PublicReasoningEntry(
                 **self._entry_fields(entry_id, PublicEntryGenerationStatus.IN_PROGRESS),
                 text=event.content,
+                status_text=event.status_text,
             )
         )
 
@@ -771,6 +784,7 @@ type NoticeEvent = (
     | SessionTitleUpdatedEvent
     | PlanReviewRequestedEvent
     | PlanReviewEndedEvent
+    | MemoryStatusEvent
 )
 
 
@@ -804,6 +818,13 @@ def _notice_data(event: NoticeEvent) -> tuple[str, NoticeDetail]:
         case PlanReviewEndedEvent():
             message = "Plan review ended"
             detail = PlanReviewEndedNoticeDetail()
+        case MemoryStatusEvent():
+            message = event.message
+            detail = MemoryStatusNoticeDetail(
+                status=event.status,
+                fast_entries=event.fast_entries,
+                persistent_entries=event.persistent_entries,
+            )
         case _:
             assert_never(event)
     return message, detail

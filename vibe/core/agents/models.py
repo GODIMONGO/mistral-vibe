@@ -57,11 +57,24 @@ class AgentProfile:
 def _plan_overrides() -> dict[str, Any]:
     plans_pattern = str(PLANS_DIR.path / "*")
     return {
+        "enabled_tools": [
+            "ask_user_question",
+            "deep_wiki",
+            "edit",
+            "exit_plan_mode",
+            "grep",
+            "read_file",
+            "skill",
+            "todo",
+            "web_fetch",
+            "web_search",
+            "write_file",
+        ],
         "tools": {
             "write_file": {"permission": "never", "allowlist": [plans_pattern]},
             "edit": {"permission": "never", "allowlist": [plans_pattern]},
             "read_file": {"allowlist": [plans_pattern]},
-        }
+        },
     }
 
 
@@ -107,7 +120,7 @@ EXPLORE = AgentProfile(
     safety=AgentSafety.SAFE,
     agent_type=AgentType.SUBAGENT,
     overrides={
-        "enabled_tools": ["grep", "read_file", "skill", "web_search"],
+        "enabled_tools": ["deep_wiki", "grep", "read_file", "skill", "web_search"],
         "system_prompt_id": "explore",
     },
 )
@@ -139,7 +152,7 @@ GOAL_ADVISOR = AgentProfile(
     safety=AgentSafety.SAFE,
     agent_type=AgentType.SUBAGENT,
     overrides={
-        "enabled_tools": ["grep", "read_file", "skill", "web_search"],
+        "enabled_tools": ["deep_wiki", "grep", "read_file", "skill", "web_search"],
         "system_prompt_id": "advisor",
     },
 )
@@ -151,7 +164,7 @@ REVIEWER = AgentProfile(
     safety=AgentSafety.SAFE,
     agent_type=AgentType.SUBAGENT,
     overrides={
-        "enabled_tools": ["grep", "read_file", "skill", "web_search"],
+        "enabled_tools": ["deep_wiki", "grep", "read_file", "skill", "web_search"],
         "system_prompt_id": "reviewer",
     },
 )
@@ -165,6 +178,7 @@ WORKER = AgentProfile(
     overrides={
         "enabled_tools": [
             "bash",
+            "deep_wiki",
             "edit",
             "grep",
             "read_file",

@@ -44,6 +44,9 @@ class _ProviderConfigOverrides(TypedDict, total=False):
     api_style: str
     backend: Backend
     reasoning_field_name: str
+    enable_streaming: bool
+    supports_stream_options: bool
+    supports_reasoning_effort: bool
     project_id: str
     region: str
 
@@ -1095,6 +1098,19 @@ class TestAutoCompactThresholdFallback:
 
 
 class TestDefaultProviderConfig:
+    def test_provider_capability_flags_survive_round_trip(self) -> None:
+        provider = _custom_provider(
+            enable_streaming=False,
+            supports_stream_options=False,
+            supports_reasoning_effort=False,
+        )
+
+        restored = ProviderConfig.model_validate(provider.model_dump(mode="json"))
+
+        assert restored.enable_streaming is False
+        assert restored.supports_stream_options is False
+        assert restored.supports_reasoning_effort is False
+
     def test_default_mistral_provider_is_mistral_backend(self) -> None:
         provider = _default_provider("mistral")
 

@@ -8,12 +8,17 @@ from vibe.cli.textual_ui.widgets.messages import UserMessage
 
 
 class TestCompactMessage:
+    def test_get_content_while_profiling(self) -> None:
+        message = CompactMessage()
+
+        assert message.get_content() == "Profiling and compacting working context..."
+
     def test_get_content_after_compaction(self) -> None:
         message = CompactMessage()
 
         message.set_complete()
 
-        assert message.get_content() == "Compaction completed."
+        assert message.get_content() == "Working context profiled and compacted."
 
 
 @pytest.mark.asyncio

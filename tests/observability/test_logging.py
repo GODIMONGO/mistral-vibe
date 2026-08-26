@@ -270,6 +270,22 @@ class TestInitFileLogging:
         assert isinstance(handler, RotatingFileHandler)
         assert handler.maxBytes == 5242880
 
+    def test_log_max_bytes_actually_caps_live_file(
+        self, log_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LOG_MAX_BYTES", "300")
+        monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+        test_logger = logging.getLogger("test_enforced_max_bytes")
+        init_file_logging(log_file, target_logger=test_logger)
+
+        for index in range(12):
+            test_logger.warning("record-%02d %s", index, "x" * 60)
+        handler = test_logger.handlers[-1]
+        handler.flush()
+
+        assert log_file.stat().st_size <= 300
+        assert "record-11" in log_file.read_text(encoding="utf-8")
+
     def test_repeated_initialization_does_not_duplicate_handler(
         self, log_file: Path
     ) -> None:

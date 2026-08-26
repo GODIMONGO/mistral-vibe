@@ -304,7 +304,9 @@ async def test_soft_timeout_streams_the_whole_output_before_handing_over():
     streamed: list[str] = []
     result = None
     async for item in tool.run(
-        ExperimentalBashArgs(command="printf first; sleep 30", timeout_seconds=0.5),
+        ExperimentalBashArgs(
+            command="printf first; sleep 30", timeout_seconds=0.5, hard_timeout=False
+        ),
         InvokeContext(tool_call_id="call-2"),
     ):
         if isinstance(item, ToolStreamEvent):
@@ -811,6 +813,50 @@ def test_reader_loop_preserves_multibyte_split_across_chunks(tmp_path):
     chunk = manager._read_file_chunk(output_path, cursor=0, max_bytes=64)
     assert chunk.output == "☃"
     assert "\ufffd" not in chunk.output
+
+
+def test_managed_shell_log_is_hard_capped(tmp_path):
+    manager = TerminalSessionManager(
+        backend=cast(ManagedShellBackend, _UnusedBackend()), max_session_log_bytes=4
+    )
+    session = _fake_session(tmp_path, "quota", _CompletedTerminal())
+
+    with pytest.raises(ManagedShellError, match="log quota reached"):
+        manager._append_output(session, b"abcdef")
+
+    assert session.output_path.read_bytes() == b"abcd"
+
+
+def test_manager_prunes_old_logs_over_total_quota(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    sessions_dir = tmp_path / "shell-tool" / "sessions"
+    sessions_dir.mkdir(parents=True)
+    output_path = sessions_dir / "bash_old.log"
+    output_path.write_bytes(b"0123456789")
+    manifest_path = sessions_dir / "bash_old.json"
+    manifest_path.write_text(
+        json.dumps({
+            "session_id": "bash_old",
+            "command": "echo old",
+            "cwd": str(tmp_path),
+            "shell": "/bin/sh",
+            "status": "orphaned",
+            "exit_code": 0,
+            "output_path": str(output_path),
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "reader_error": None,
+        }),
+        encoding="utf-8",
+    )
+
+    manager = TerminalSessionManager(
+        backend=cast(ManagedShellBackend, _UnusedBackend()), max_total_log_bytes=5
+    )
+
+    assert manager.list_sessions() == []
+    assert not output_path.exists()
+    assert not manifest_path.exists()
 
 
 def test_reader_loop_reports_an_exit_code_when_the_terminal_cannot_be_reaped(tmp_path):
@@ -1351,7 +1397,11 @@ async def test_closing_the_generator_keeps_a_soft_timeout_session_running():
         terminal_runtime=terminal_runtime,
     )
     manager = terminal_runtime.get()
-    gen = tool.run(ExperimentalBashArgs(command="sleep 30", timeout_seconds=0.5))
+    gen = tool.run(
+        ExperimentalBashArgs(
+            command="sleep 30", timeout_seconds=0.5, hard_timeout=False
+        )
+    )
 
     result = await anext(gen)
     await gen.aclose()
@@ -1360,6 +1410,26 @@ async def test_closing_the_generator_keeps_a_soft_timeout_session_running():
     assert result.status == "running"
     assert manager.info(result.session_id).status == "running"
     manager.kill(result.session_id)
+
+
+@pytest.mark.skipif(is_windows(), reason="managed bash is POSIX-only")
+@pytest.mark.asyncio
+async def test_timeout_is_hard_by_default_and_kills_the_session():
+    terminal_runtime = TerminalRuntime()
+    tool = ExperimentalBash(
+        config_getter=lambda: ExperimentalBashToolConfig(),
+        state=BaseToolState(),
+        terminal_runtime=terminal_runtime,
+    )
+    manager = terminal_runtime.get()
+
+    with pytest.raises(ToolError, match="Command timed out after 0.2s"):
+        await collect_result(
+            tool.run(ExperimentalBashArgs(command="sleep 30", timeout_seconds=0.2))
+        )
+
+    session = manager.list_sessions()[0]
+    assert session.status == "timed_out"
 
 
 @pytest.mark.skipif(is_windows(), reason="managed bash is POSIX-only")
@@ -1525,6 +1595,14 @@ def test_resolve_timeout_uses_shared_bash_default_timeout():
     assert bash_tool._resolve_timeout(None) == 300
     assert bash_tool._resolve_timeout(50) == 50
     assert bash_tool._resolve_timeout(10_000) == 600
+
+
+def test_managed_command_timeout_is_hard_by_default():
+    args = ExperimentalBashArgs(command="build", timeout_seconds=300)
+
+    assert args.hard_timeout is True
+    display = ExperimentalBash.format_call_display(args)
+    assert display.message == "build [kill after 300s]"
 
 
 def test_build_env_neutralizes_pagers_but_keeps_interactive_term(monkeypatch):

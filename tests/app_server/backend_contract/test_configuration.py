@@ -48,7 +48,7 @@ async def test_effort_updates_thinking_and_independent_subagent_limit(
 ) -> None:
     config = backend_contract_session.resources.config
 
-    await config.set_effort("off", 0, "low", "off")
+    await config.set_effort("off", 0, "low", "off", "low", False, False, False)
 
     assert config.current.active_model.thinking == "off"
     assert config.current.autonomy.max_parallel_subagents == 0
@@ -56,9 +56,13 @@ async def test_effort_updates_thinking_and_independent_subagent_limit(
     assert config.current.autonomy.enabled is False
     assert config.current.active_model.temperature == 1.0
     assert config.current.autonomy.web_search_activity == "off"
+    assert config.current.autonomy.vibe_thinking == "low"
+    assert config.current.autonomy.gauntlet_loop is False
+    assert config.current.autonomy.boost_mode is False
+    assert config.current.autonomy.personal_experience is False
     assert not backend_contract_session.resources.runtime.has_tool("web_search")
 
-    await config.set_effort("max", 16, "max", "max")
+    await config.set_effort("max", 16, "max", "max", "max", True, False)
 
     assert config.current.active_model.thinking == "max"
     assert config.current.autonomy.max_parallel_subagents == 16
@@ -66,7 +70,67 @@ async def test_effort_updates_thinking_and_independent_subagent_limit(
     assert config.current.autonomy.enabled is True
     assert config.current.active_model.temperature == 0.0
     assert config.current.autonomy.web_search_activity == "max"
+    assert config.current.autonomy.vibe_thinking == "max"
+    assert config.current.autonomy.gauntlet_loop is True
+    assert config.current.autonomy.boost_mode is False
     assert backend_contract_session.resources.runtime.has_tool("web_search")
+
+
+@pytest.mark.asyncio
+async def test_autonomy_models_are_selected_independently_through_config_resource(
+    backend_contract_session: AppServerSession,
+) -> None:
+    config = backend_contract_session.resources.config
+    aliases = [model.alias for model in config.current.models]
+    active_alias = config.current.active_model.alias
+    assert len(aliases) >= 2
+
+    await config.set_autonomy_models(
+        goal_advisor_model=aliases[1], reviewer_model=aliases[0]
+    )
+
+    assert config.current.autonomy.goal_advisor_model == aliases[1]
+    assert config.current.autonomy.reviewer_model == aliases[0]
+    assert config.current.active_model.alias == active_alias
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_preset_uses_medium_worker_and_max_review_model(
+    backend_contract_session: AppServerSession,
+) -> None:
+    config = backend_contract_session.resources.config
+    aliases = [model.alias for model in config.current.models]
+    assert len(aliases) >= 2
+    review_alias = aliases[1]
+
+    await config.configure_opencode_go(review_alias)
+
+    models = {model.alias: model for model in config.current.models}
+    assert config.current.active_model.thinking == "medium"
+    assert config.current.autonomy.goal_advisor_model == review_alias
+    assert config.current.autonomy.reviewer_model == review_alias
+    assert models[review_alias].thinking == "max"
+    assert models[review_alias].temperature == 0.0
+
+
+@pytest.mark.asyncio
+async def test_boost_effort_enforces_the_complete_quality_profile(
+    backend_contract_session: AppServerSession,
+) -> None:
+    config = backend_contract_session.resources.config
+
+    await config.set_effort("low", 1, "low", "off", "off", False, True)
+
+    assert config.current.active_model.thinking == "max"
+    assert config.current.active_model.temperature == 0.0
+    assert config.current.autonomy.max_parallel_subagents == 16
+    assert config.current.autonomy.aggressiveness == "max"
+    assert config.current.autonomy.enabled is True
+    assert config.current.autonomy.web_search_activity == "max"
+    assert config.current.autonomy.vibe_thinking == "max"
+    assert config.current.autonomy.gauntlet_loop is True
+    assert config.current.autonomy.boost_mode is True
+    assert config.current.autonomy.personal_experience is True
 
 
 @pytest.mark.asyncio

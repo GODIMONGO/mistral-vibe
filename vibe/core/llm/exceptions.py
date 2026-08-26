@@ -34,6 +34,8 @@ _QUOTA_EXHAUSTED_SUBSTRINGS = (
     "subscription exhausted",
 )
 
+_LARGE_PAYLOAD_RECOVERY_MIN_CHARS = 160_000
+
 
 def is_quota_exhaustion_text(text: str) -> bool:
     body = text.lower()
@@ -55,11 +57,14 @@ class PayloadSummary(BaseModel):
 
 
 class IncompleteStreamError(RuntimeError):
-    def __init__(self, provider: str, model: str) -> None:
+    def __init__(
+        self, provider: str, model: str, *, reason: str = "a finish reason"
+    ) -> None:
         self.provider = provider
         self.model = model
+        self.reason = reason
         super().__init__(
-            f"Model stream from {provider} ({model}) ended without a finish reason."
+            f"Model stream from {provider} ({model}) ended without {reason}."
         )
 
 
@@ -96,6 +101,14 @@ class BackendError(RuntimeError):
         return any(s in body for s in _CONTEXT_TOO_LONG_SUBSTRINGS)
 
     @property
+    def is_large_payload_transport_error(self) -> bool:
+        return (
+            self.status is None
+            and self.parsed_error == "Network error"
+            and self.payload_summary.approx_chars >= _LARGE_PAYLOAD_RECOVERY_MIN_CHARS
+        )
+
+    @property
     def is_response_too_long(self) -> bool:
         if self.status != HTTPStatus.UNPROCESSABLE_ENTITY:
             return False
@@ -122,7 +135,14 @@ class BackendError(RuntimeError):
             return "Invalid API key. Please check your API key and try again."
 
         if self.status == HTTPStatus.TOO_MANY_REQUESTS:
-            return "Rate limit exceeded. Please wait a moment before trying again."
+            retry_after = self.headers.get("retry-after")
+            lines = ["Rate limit exceeded."]
+            if self.parsed_error:
+                lines.append(f"Provider message: {self._excerpt(self.parsed_error)}")
+            if retry_after:
+                lines.append(f"Retry after: {self._excerpt(retry_after, n=80)}")
+            lines.append("Please wait before trying again.")
+            return "\n".join(lines)
 
         if self.is_invalid_model:
             lines = [

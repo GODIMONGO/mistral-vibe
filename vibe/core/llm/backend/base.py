@@ -24,13 +24,15 @@ def build_chat_payload(
     max_tokens: int | None,
     tool_choice: StrToolChoice | AvailableTool | None,
     thinking: str,
+    supports_reasoning_effort: bool = True,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model_name,
         "messages": messages,
         "temperature": temperature,
     }
-    apply_reasoning_effort(payload, thinking)
+    if supports_reasoning_effort:
+        apply_reasoning_effort(payload, thinking)
     if tools:
         payload["tools"] = [tool.model_dump(exclude_none=True) for tool in tools]
     if tool_choice:
@@ -56,10 +58,12 @@ def finalize_chat_request(
     stream_options: dict[str, Any],
     api_key: str | None,
     endpoint: str,
+    supports_stream_options: bool = True,
 ) -> PreparedRequest:
     if enable_streaming:
         payload["stream"] = True
-        payload["stream_options"] = stream_options
+        if supports_stream_options:
+            payload["stream_options"] = stream_options
     headers = build_auth_headers(api_key)
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     return PreparedRequest(endpoint, headers, body)

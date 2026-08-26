@@ -11,12 +11,12 @@ class CompactMessage(StatusMessage):
 
     def get_content(self) -> str:
         if self._is_spinning:
-            return "Compacting conversation history..."
+            return "Profiling and compacting working context..."
 
         if self.error_message:
             return f"Error: {self.error_message}"
 
-        return "Compaction completed."
+        return "Working context profiled and compacted."
 
     def set_complete(self) -> None:
         self.stop_spinning(success=True)

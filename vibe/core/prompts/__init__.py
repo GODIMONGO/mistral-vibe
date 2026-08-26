@@ -31,12 +31,16 @@ class SystemPrompt(Prompt):
 
 class UtilityPrompt(Prompt):
     AGENTS_DOC = auto()
+    AUTONOMY_INTENT = auto()
     COMPACT = auto()
     COMPACT_SUMMARY_PREFIX = auto()
     COMPACT_SYSTEM = auto()
     DANGEROUS_DIRECTORY = auto()
     PROJECT_CONTEXT = auto()
     TURN_SUMMARY = auto()
+    VIBE_FAST_THINKING = auto()
+    VIBE_DELIBERATION = auto()
+    VIBE_DELIBERATION_SYNTHESIS = auto()
     WORKTREE_NAME = auto()
 
 

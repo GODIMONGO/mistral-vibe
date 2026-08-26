@@ -9,6 +9,7 @@ from vibe.core.compaction import (
     render_teleport_summary_request,
     select_model_context,
 )
+from vibe.core.memory import build_working_memory_message
 from vibe.core.teleport.types import TELEPORT_MESSAGE_CONTEXT_MAX_LENGTH
 from vibe.core.types import LLMMessage, Role
 
@@ -275,28 +276,35 @@ def test_teleport_summary_request_mentions_summary_limit() -> None:
     )
 
 
-def test_budget_drops_oldest_first() -> None:
-    # max_tokens=2 → 8 char budget. Walks newest-first, so "old" gets dropped.
+def test_budget_preserves_bounded_initial_objective_and_latest_turn() -> None:
+    # The first turn remains as a bounded durable objective while the newest
+    # turn receives the rest of a very small budget.
     messages = [
         _user("old message that is long enough to matter"),
         _user("abc"),  # 1 token, fits
         _user("def"),  # 1 token, fits
     ]
     out = collect_prior_user_messages(messages, _PREFIX, max_tokens=2)
-    assert [m.content for m in out] == ["abc", "def"]
+    assert len(out) == 2
+    assert out[0].content is not None
+    assert "old" in out[0].content
+    assert out[1].content == "def"
 
 
-def test_spillover_message_middle_truncated() -> None:
-    # newest fits whole, middle one is partially trimmed, oldest dropped.
+def test_spillover_preserves_initial_and_middle_truncated() -> None:
+    # A bounded initial objective and newest turn survive; the middle turn uses
+    # the remaining budget and is middle-truncated.
     messages = [
         _user("OLDEST" + "x" * 10_000 + "OLDEST_END"),
         _user("MIDDLE_HEAD" + "y" * 1_000 + "MIDDLE_TAIL"),
         _user("recent"),  # ~2 tokens
     ]
     out = collect_prior_user_messages(messages, _PREFIX, max_tokens=50)
-    assert len(out) == 2  # oldest dropped
+    assert len(out) == 3
+    assert out[0].content is not None
+    assert out[0].content.startswith("OLDEST")
     assert out[-1].content == "recent"
-    middle = out[0].content
+    middle = out[1].content
     assert middle is not None
     assert middle.startswith("MIDDLE_HEAD")
     assert middle.endswith("MIDDLE_TAIL")
@@ -358,3 +366,35 @@ def test_select_model_context_starts_at_latest_compaction() -> None:
     ]
 
     assert select_model_context(messages) == [messages[0], second, messages[-1]]
+
+
+def test_select_model_context_keeps_only_latest_fast_memory_across_compaction() -> None:
+    first_memory = build_working_memory_message(
+        [], tool="bash", action="first", status="success", result="done"
+    )
+    second_memory = build_working_memory_message(
+        [first_memory],
+        tool="read_file",
+        action="second",
+        status="success",
+        result="read",
+    )
+    boundary = LLMMessage(
+        role=Role.user,
+        content="compacted context",
+        injected=True,
+        context_boundary="compaction",
+    )
+    after = _user("continue")
+    system = _msg(Role.system, "sys")
+
+    selected = select_model_context([
+        system,
+        first_memory,
+        _user("old"),
+        second_memory,
+        boundary,
+        after,
+    ])
+
+    assert selected == [system, second_memory, boundary, after]

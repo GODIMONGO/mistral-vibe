@@ -101,6 +101,20 @@ class TestQuitManager:
 
 class TestActionInterruptOrQuit(_SessionReadyApp):
     @pytest.mark.asyncio
+    async def test_escape_marks_manual_shell_as_stopping_before_cancelling(
+        self, app: VibeApp
+    ) -> None:
+        bash_task = asyncio.create_task(asyncio.Event().wait())
+        app._bash_task = bash_task
+        app._loading_widget = MagicMock()
+
+        assert app._try_interrupt_running_job()
+
+        app._loading_widget.set_status.assert_called_once_with("Stopping")
+        await asyncio.sleep(0)
+        assert bash_task.cancelled()
+
+    @pytest.mark.asyncio
     async def test_interrupt_keeps_server_turn_consumer_alive(
         self, app: VibeApp
     ) -> None:

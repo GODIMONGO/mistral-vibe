@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 from mistralai.client.errors import SDKError
 from mistralai.client.models import AssistantMessage
+from mistralai.client.types import UNSET
 from mistralai.client.utils.retries import BackoffStrategy, RetryConfig
 import pytest
 import respx
@@ -52,6 +53,158 @@ from vibe.utils.tool_presentation import (
     ToolCallPresentation,
     ToolEffectKind,
 )
+
+
+def test_openai_adapter_normalizes_null_tool_call_type() -> None:
+    message = OpenAIAdapter()._parse_message(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": None,
+                                "function": {"name": "bash", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+        "reasoning_content",
+    )
+
+    assert message is not None
+    assert message.tool_calls is not None
+    assert message.tool_calls[0].type == "function"
+
+
+def test_openai_adapter_reports_unknown_tool_call_type_clearly() -> None:
+    with pytest.raises(ValueError, match="Unsupported provider tool call type"):
+        OpenAIAdapter()._parse_message(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "tool_call",
+                                    "function": {"name": "bash", "arguments": "{}"},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+            "reasoning_content",
+        )
+
+
+@pytest.mark.asyncio
+async def test_generic_backend_accepts_sse_data_without_optional_space() -> None:
+    base_url = "https://api.example.com"
+    response = (
+        b'data:{"choices":[{"delta":{"role":"assistant","content":"hi"},'
+        b'"finish_reason":"stop"}],"usage":{"prompt_tokens":1,'
+        b'"completion_tokens":1}}\n\ndata:[DONE]\n\n'
+    )
+    with respx.mock(base_url=base_url) as mock_api:
+        mock_api.post(CHAT_COMPLETIONS_PATH).mock(
+            return_value=httpx.Response(
+                200,
+                stream=httpx.ByteStream(response),
+                headers={"Content-Type": "text/event-stream"},
+            )
+        )
+        backend = GenericBackend(
+            provider=ProviderConfig(
+                name="provider", api_base=f"{base_url}/v1", api_key_env_var="API_KEY"
+            )
+        )
+        chunks = [
+            chunk
+            async for chunk in backend.complete_streaming(
+                model=ModelConfig(name="model", provider="provider", alias="model"),
+                messages=[LLMMessage(role=Role.user, content="hello")],
+                temperature=0.2,
+                tools=None,
+                max_tokens=None,
+                tool_choice=None,
+                extra_headers=None,
+            )
+        ]
+
+    assert chunks[0].message.content == "hi"
+
+
+def test_openai_provider_capabilities_omit_optional_request_fields() -> None:
+    request = OpenAIAdapter().prepare_request(
+        model_name="model",
+        messages=[LLMMessage(role=Role.user, content="hello")],
+        temperature=0.2,
+        tools=None,
+        max_tokens=None,
+        tool_choice=None,
+        enable_streaming=True,
+        provider=ProviderConfig(
+            name="local",
+            api_base="http://localhost:1234/v1",
+            supports_reasoning_effort=False,
+            supports_stream_options=False,
+        ),
+        thinking="high",
+    )
+
+    payload = json.loads(request.body)
+    assert payload["stream"] is True
+    assert "reasoning_effort" not in payload
+    assert "stream_options" not in payload
+
+
+@pytest.mark.asyncio
+async def test_generic_backend_can_disable_streaming_for_local_provider() -> None:
+    base_url = "https://api.example.com"
+    with respx.mock(base_url=base_url) as mock_api:
+        route = mock_api.post(CHAT_COMPLETIONS_PATH).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "hi"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            )
+        )
+        backend = GenericBackend(
+            provider=ProviderConfig(
+                name="provider", api_base=f"{base_url}/v1", enable_streaming=False
+            )
+        )
+        chunks = [
+            chunk
+            async for chunk in backend.complete_streaming(
+                model=ModelConfig(name="model", provider="provider", alias="model"),
+                messages=[LLMMessage(role=Role.user, content="hello")],
+                temperature=0.2,
+                tools=None,
+                max_tokens=None,
+                tool_choice=None,
+                extra_headers=None,
+            )
+        ]
+
+    assert [chunk.message.content for chunk in chunks] == ["hi"]
+    assert json.loads(route.calls[0].request.content).get("stream") is None
 
 
 def test_internal_tool_presentation_is_not_sent_to_provider() -> None:
@@ -552,6 +705,18 @@ class TestBackendFactory:
         assert isinstance(backend, GenericBackend)
         assert backend._enable_otel is True
 
+    def test_create_backend_passes_retry_budget_to_generic_backend(self):
+        provider = ProviderConfig(
+            name="test_provider",
+            api_base="https://api.example.com/v1",
+            backend=Backend.GENERIC,
+        )
+
+        backend = create_backend(provider=provider, retry_max_elapsed_time=1234.0)
+
+        assert isinstance(backend, GenericBackend)
+        assert backend._retry_max_elapsed_time == 1234.0
+
 
 class TestMistralRetry:
     @staticmethod
@@ -849,6 +1014,77 @@ class TestMistralBackendReasoningEffort:
             call_kwargs = mock_client.chat.complete_async.call_args.kwargs
             assert call_kwargs["reasoning_effort"] == expected_effort
             assert call_kwargs["temperature"] == 0.2
+            assert call_kwargs["top_p"] is UNSET
+            assert call_kwargs["parallel_tool_calls"] is True
+
+    @pytest.mark.asyncio
+    async def test_zero_temperature_uses_greedy_compatible_top_p(
+        self, backend: MistralBackend
+    ) -> None:
+        model = ModelConfig(
+            name="mistral-vibe-cli-latest", provider="mistral", alias="mistral-vibe"
+        )
+        messages = [LLMMessage(role=Role.user, content="hi")]
+
+        with patch.object(backend, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "hello"
+            mock_response.choices[0].message.tool_calls = None
+            mock_response.usage.prompt_tokens = 10
+            mock_response.usage.completion_tokens = 5
+            mock_client.chat.complete_async = AsyncMock(return_value=mock_response)
+            mock_get_client.return_value = mock_client
+
+            await backend.complete(
+                model=model,
+                messages=messages,
+                temperature=0.0,
+                tools=None,
+                max_tokens=None,
+                tool_choice=None,
+                extra_headers=None,
+            )
+
+            call_kwargs = mock_client.chat.complete_async.call_args.kwargs
+            assert call_kwargs["temperature"] == 0.0
+            assert call_kwargs["top_p"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_zero_temperature_streaming_uses_greedy_compatible_top_p(
+        self, backend: MistralBackend
+    ) -> None:
+        model = ModelConfig(
+            name="mistral-vibe-cli-latest", provider="mistral", alias="mistral-vibe"
+        )
+        messages = [LLMMessage(role=Role.user, content="hi")]
+
+        with patch.object(backend, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_stream = MagicMock()
+            mock_stream.response.headers = {}
+            mock_stream.__aiter__.return_value = iter(())
+            mock_client.chat.stream_async = AsyncMock(return_value=mock_stream)
+            mock_get_client.return_value = mock_client
+
+            chunks = [
+                chunk
+                async for chunk in backend.complete_streaming(
+                    model=model,
+                    messages=messages,
+                    temperature=0.0,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
+            ]
+
+            assert chunks == []
+            call_kwargs = mock_client.chat.stream_async.call_args.kwargs
+            assert call_kwargs["temperature"] == 0.0
+            assert call_kwargs["top_p"] == 1.0
 
     @pytest.mark.asyncio
     async def test_complete_omits_reasoning_content_when_thinking_off(

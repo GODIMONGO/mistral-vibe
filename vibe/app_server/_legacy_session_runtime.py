@@ -519,6 +519,7 @@ class LegacySessionRuntimeController:
     ) -> OpenedRuntime:
         options = params.agent_config.model_copy(update={"cwd": params.cwd})
         try:
+            await self._require_worktree_trust(options)
             worktree_resolution = await self._resolve_worktree(options)
             try:
                 agent_loop = await self._open_root(
@@ -550,6 +551,21 @@ class LegacySessionRuntimeController:
             ) from exc
         except GitError as exc:
             raise RequestFailure(ProtocolErrorCode.INVALID_PARAMS, str(exc)) from exc
+
+    async def _require_worktree_trust(self, options: SessionOptions) -> None:
+        """Reject worktree checkout before Git can execute untrusted repo hooks."""
+        if options.worktree is None or options.trust_workspace:
+            return
+        cwd = Path(options.cwd or Path.cwd()).expanduser().resolve()
+        trusted = await asyncio.to_thread(self._host_handler.is_workspace_trusted, cwd)
+        if trusted:
+            return
+        raise RequestFailure(
+            ProtocolErrorCode.INVALID_PARAMS,
+            "Refusing to create or select a worktree before the source workspace "
+            "is trusted. Trust the workspace first or explicitly set "
+            "trust_workspace for this session.",
+        )
 
     async def _resolve_worktree(self, options: SessionOptions) -> WorktreeResolution:
         if options.worktree is None:

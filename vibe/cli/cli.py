@@ -14,7 +14,6 @@ from vibe.cli.session_exit import print_session_resume_message
 from vibe.cli.terminal_detect import detect_terminal
 from vibe.cli.update_notifier import (
     FileSystemUpdateCacheRepository,
-    PyPIUpdateGateway,
     UpdateCacheRepository,
     UpdateError,
     UpdateGateway,
@@ -303,17 +302,18 @@ def _show_update_prompt(
             sys.exit(0)
         case UpdatePromptResult.UPDATED:
             rprint(
-                f"[green]✔ Vibe was updated from {__version__} to "
+                f"[green]✔ Powerstral was updated from {__version__} to "
                 f"{latest_version}.[/]\n  Run [bold]vibe[/] to start using the "
                 "new version."
             )
             sys.exit(0)
         case UpdatePromptResult.UPDATE_FAILED:
             rprint(
-                "[yellow]Vibe could not update automatically.[/]\n"
-                "  Update manually with your package manager (for example "
-                "[bold]uv tool upgrade mistral-vibe[/]), or keep using "
-                f"the current version ({__version__}) for now."
+                "[yellow]Powerstral could not update automatically.[/]\n"
+                "  Review and install a trusted release from "
+                "[link=https://github.com/GODIMONGO/powerstral]"
+                "https://github.com/GODIMONGO/powerstral[/link], or keep "
+                f"using the current version ({__version__}) for now."
             )
             sys.exit(1)
 
@@ -354,7 +354,16 @@ def _run_check_upgrade(
 ) -> None:
     from vibe.setup.update_prompt import UpdatePromptMode
 
-    notifier = update_notifier or PyPIUpdateGateway(project_name="mistral-vibe")
+    if update_notifier is None:
+        rprint(
+            "[yellow]Powerstral does not use the upstream mistral-vibe update "
+            "channel.[/] Update from "
+            "[link=https://github.com/GODIMONGO/powerstral]"
+            "https://github.com/GODIMONGO/powerstral[/link] after reviewing "
+            "local changes."
+        )
+        return
+    notifier = update_notifier
     try:
         update = asyncio.run(
             get_update_if_available(

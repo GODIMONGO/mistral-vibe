@@ -607,6 +607,70 @@ class TestSessionLoaderLoadSession:
         with pytest.raises(ValueError, match="Session messages file is empty"):
             SessionLoader.load_session(session_folder)
 
+    def test_load_session_restores_private_fast_working_memory(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        from vibe.core.memory import (
+            build_working_memory_message,
+            is_working_memory_message,
+            load_working_memory,
+        )
+
+        session_folder = Path(session_config.save_dir) / "working-memory-session"
+        session_folder.mkdir()
+        (session_folder / "messages.jsonl").write_text(
+            '{"role":"user","content":"Run tests"}\n'
+            '{"role":"assistant","content":"Done"}\n',
+            encoding="utf-8",
+        )
+        memory_message = build_working_memory_message(
+            [],
+            tool="bash",
+            action="uv run pytest",
+            status="success",
+            result="57 passed",
+        )
+        (session_folder / "meta.json").write_text(
+            json.dumps({
+                "session_id": "working-memory-session",
+                "total_messages": 2,
+                "working_memory": memory_message.model_dump(
+                    exclude_none=True, mode="json"
+                ),
+            }),
+            encoding="utf-8",
+        )
+
+        messages, _ = SessionLoader.load_session(session_folder)
+
+        assert len(messages) == 3
+        assert is_working_memory_message(messages[-1])
+        result = load_working_memory(messages).entries[0].result
+        assert result.startswith("output_sha256=")
+        assert "57 passed" not in (messages[-1].content or "")
+
+    def test_load_session_ignores_invalid_private_working_memory(
+        self, session_config: SessionLoggingConfig
+    ) -> None:
+        session_folder = Path(session_config.save_dir) / "invalid-working-memory"
+        session_folder.mkdir()
+        (session_folder / "messages.jsonl").write_text(
+            '{"role":"user","content":"Hello"}\n', encoding="utf-8"
+        )
+        (session_folder / "meta.json").write_text(
+            json.dumps({
+                "session_id": "invalid-working-memory",
+                "total_messages": 1,
+                "working_memory": {"role": "system", "content": 42},
+            }),
+            encoding="utf-8",
+        )
+
+        messages, _ = SessionLoader.load_session(session_folder)
+
+        assert len(messages) == 1
+        assert messages[0].role is Role.user
+
     def test_load_session_empty_messages_valid_when_metadata_records_zero(
         self, session_config: SessionLoggingConfig
     ) -> None:

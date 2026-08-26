@@ -25,6 +25,7 @@ from vibe.app_server._projection import (
     project_connectors,
     project_debug_logs,
     project_diagnostics,
+    project_harness,
     project_mcp,
     project_session_log,
     project_skills,
@@ -245,6 +246,7 @@ class ResourceRequestHandler:
             hooks_count=hooks_count,
             connectors=project_connectors(self._agent_loop),
             mcp=self._mcp_state(),
+            harness=project_harness(self._agent_loop.harness),
         )
 
     def _mcp_state(self) -> MCPState:

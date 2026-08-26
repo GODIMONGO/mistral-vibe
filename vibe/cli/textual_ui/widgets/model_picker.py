@@ -63,6 +63,7 @@ class ModelPickerApp(Container):
         *,
         is_pinned: bool,
         default_display_name: str,
+        title: str = "Select Model",
         **kwargs: Any,
     ) -> None:
         super().__init__(id="modelpicker-app", **kwargs)
@@ -70,6 +71,7 @@ class ModelPickerApp(Container):
         self._current_model = current_model
         self._is_pinned = is_pinned
         self._default_display_name = default_display_name
+        self._title = title
 
     def _is_alias_current(self, alias: str) -> bool:
         return self._is_pinned and alias == self._current_model
@@ -95,7 +97,7 @@ class ModelPickerApp(Container):
             ),
         ]
         with Vertical(id="modelpicker-content"):
-            yield NoMarkupStatic("Select Model", classes="modelpicker-title")
+            yield NoMarkupStatic(self._title, classes="modelpicker-title")
             yield NavigableOptionList(*options, id="modelpicker-options")
             yield NoMarkupStatic(
                 shortcut_hint(

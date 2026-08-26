@@ -76,6 +76,7 @@ def _entry_widgets(
                     completed=(
                         entry.generation_status is PublicEntryGenerationStatus.COMPLETED
                     ),
+                    status_text=entry.status_text,
                 )
             ]
         case PublicEffectEntry():

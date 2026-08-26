@@ -74,6 +74,15 @@ def _windows_oem_encoding() -> str | None:
     return f"cp{ctypes.windll.kernel32.GetOEMCP()}"
 
 
+def windows_console_encoding() -> str:
+    """Return the codec used by native Windows console subprocess output.
+
+    Git Bash and POSIX shells are UTF-8 and should not use this helper. The
+    fallback keeps non-Windows tests and unusual Windows hosts deterministic.
+    """
+    return _windows_oem_encoding() or "utf-8"
+
+
 def _get_candidate_encodings(
     raw: bytes, preferred_encoding: str | None = None
 ) -> Iterator[str]:

@@ -1,0 +1,11 @@
+from __future__ import annotations
+
+OPENCODE_GO_API_KEY_ENV_VAR = "OPENCODE_GO_API_KEY"
+OPENCODE_GO_MODEL_PREFIX = "opencode-go/"
+OPENCODE_GO_RECOMMENDED_REVIEW_MODEL = "opencode-go/deepseek-v4-flash"
+
+__all__ = [
+    "OPENCODE_GO_API_KEY_ENV_VAR",
+    "OPENCODE_GO_MODEL_PREFIX",
+    "OPENCODE_GO_RECOMMENDED_REVIEW_MODEL",
+]

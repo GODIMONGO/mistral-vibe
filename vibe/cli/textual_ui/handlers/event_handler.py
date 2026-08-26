@@ -23,6 +23,7 @@ from vibe.app_server.models import (
     HookScope,
     HookSeverity,
     JsonPatchOperation,
+    MemoryStatusNoticeDetail,
     PlanReviewEndedNoticeDetail,
     PlanReviewStartedNoticeDetail,
     PublicCallbackEntry,
@@ -165,7 +166,9 @@ class EventHandler:
                 await self._resolve_retry_presentation(continue_assistant=False)
             case PublicReasoningEntry():
                 await self._resolve_retry_presentation(continue_assistant=False)
-                await self._handle_reasoning_delta(entry.text, loading_widget)
+                await self._handle_reasoning_delta(
+                    entry.text, loading_widget, status_text=entry.status_text
+                )
                 if entry.generation_status is PublicEntryGenerationStatus.COMPLETED:
                     await self.finalize_streaming()
             case PublicEffectEntry():
@@ -205,7 +208,9 @@ class EventHandler:
                     await self.finalize_streaming()
             case PublicReasoningEntry():
                 if delta := _appended_text(update.patch, "/text"):
-                    await self._handle_reasoning_delta(delta, loading_widget)
+                    await self._handle_reasoning_delta(
+                        delta, loading_widget, status_text=entry.status_text
+                    )
                 if entry.generation_status is PublicEntryGenerationStatus.COMPLETED:
                     await self.finalize_streaming()
             case PublicEffectEntry():
@@ -301,17 +306,23 @@ class EventHandler:
         return assistant
 
     async def _handle_reasoning_delta(
-        self, content: str, loading_widget: LoadingWidget | None
+        self,
+        content: str,
+        loading_widget: LoadingWidget | None,
+        *,
+        status_text: str | None = None,
     ) -> None:
         if loading_widget is not None:
-            loading_widget.set_status(THINKING_LOADING_STATUS)
+            loading_widget.set_status(status_text or THINKING_LOADING_STATUS)
         if self.current_streaming_message is not None:
             await self.current_streaming_message.stop_stream()
             if self.current_streaming_message.is_stripped_content_empty():
                 await self.current_streaming_message.remove()
             self.current_streaming_message = None
         if self.current_streaming_reasoning is None:
-            message = ReasoningMessage(content, collapsed=self.get_tools_collapsed())
+            message = ReasoningMessage(
+                content, collapsed=self.get_tools_collapsed(), status_text=status_text
+            )
             self.current_streaming_reasoning = message
             group = await self._ensure_tool_group()
             await self._mount_in_group(group, message)
@@ -319,6 +330,7 @@ class EventHandler:
                 message.display = False
                 group.sync_visibility()
             return
+        self.current_streaming_reasoning.set_status_text(status_text)
         await self.current_streaming_reasoning.append_content(content)
 
     async def _handle_notice(
@@ -344,6 +356,9 @@ class EventHandler:
             case ScheduledLoopFiredNoticeDetail():
                 await self.finalize_streaming()
                 await self.mount_callback(UserCommandMessage(entry.message))
+            case MemoryStatusNoticeDetail():
+                await self.finalize_streaming()
+                await self.mount_callback(UserCommandMessage(f"◇ {entry.message}"))
             case SessionTitleUpdatedNoticeDetail():
                 pass
 

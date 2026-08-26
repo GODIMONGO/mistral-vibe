@@ -53,3 +53,4 @@ def test_memory_args_require_action_specific_fields() -> None:
 
 def test_memory_writes_require_permission_by_default() -> None:
     assert MemoryConfig().permission is ToolPermission.ASK
+    assert MemoryConfig().auto_remember is False

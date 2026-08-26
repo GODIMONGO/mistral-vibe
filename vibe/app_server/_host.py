@@ -134,6 +134,10 @@ class HostRequestHandler:
     def handles(self, method: str) -> bool:
         return method in _HOST_METHODS
 
+    def is_workspace_trusted(self, cwd: Path) -> bool:
+        """Return whether local config/code execution is trusted for ``cwd``."""
+        return self._harness_files.trust_store.is_trusted(cwd.resolve()) is True
+
     async def dispatch(self, method: str, raw_params: dict[str, Any]) -> DispatchResult:
         try:
             response = await self._dispatch(method, raw_params)

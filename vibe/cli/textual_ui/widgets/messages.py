@@ -345,11 +345,17 @@ class ReasoningMessage(ClickWithoutDragMixin, SpinnerMixin, StreamingMessageBase
     COMPLETED_TEXT = "Thought"
 
     def __init__(
-        self, content: str, collapsed: bool = True, *, completed: bool = False
+        self,
+        content: str,
+        collapsed: bool = True,
+        *,
+        completed: bool = False,
+        status_text: str | None = None,
     ) -> None:
         super().__init__(content)
         self.add_class("reasoning-message")
         self.collapsed = collapsed
+        self.status_text = status_text
         self._indicator_widget: Static | None = None
         self._header_widget: Horizontal | None = None
         self.init_spinner()
@@ -365,7 +371,10 @@ class ReasoningMessage(ClickWithoutDragMixin, SpinnerMixin, StreamingMessageBase
                 )
                 yield self._indicator_widget
                 self._status_text_widget = NoMarkupStatic(
-                    self.SPINNING_TEXT if self._is_spinning else self.COMPLETED_TEXT,
+                    self.status_text
+                    or (
+                        self.SPINNING_TEXT if self._is_spinning else self.COMPLETED_TEXT
+                    ),
                     classes="reasoning-collapsed-text",
                 )
                 yield self._status_text_widget
@@ -385,9 +394,18 @@ class ReasoningMessage(ClickWithoutDragMixin, SpinnerMixin, StreamingMessageBase
 
     def stop_spinning(self, success: bool = True) -> None:
         super().stop_spinning(success)
+        if self._status_text_widget is not None and self.status_text:
+            self._status_text_widget.update(self.status_text)
         if self._indicator_widget:
             self._indicator_widget.remove_class("success", "error")
             self._indicator_widget.update("⏵" if self.collapsed else "⏷")
+
+    def set_status_text(self, status_text: str | None) -> None:
+        if not status_text or status_text == self.status_text:
+            return
+        self.status_text = status_text
+        if self._status_text_widget is not None:
+            self._status_text_widget.update(status_text)
 
     def _is_click_on_toggle(self, event: events.Click) -> bool:
         return self._is_click_within(event, self._header_widget)

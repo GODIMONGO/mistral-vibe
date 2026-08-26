@@ -36,6 +36,7 @@ from mistralai.client.models import (
     ToolMessage,
     UserMessage,
 )
+from mistralai.client.types import UNSET
 from mistralai.client.utils.retries import BackoffStrategy, RetryConfig
 from mistralai.extra.observability.telemetry import configure_telemetry
 
@@ -411,6 +412,7 @@ class MistralBackend:
                     for msg in messages
                 ],
                 temperature=temperature,
+                top_p=1.0 if temperature == 0.0 else UNSET,
                 tools=[self._mapper.prepare_tool(tool) for tool in tools]
                 if tools
                 else None,
@@ -421,6 +423,7 @@ class MistralBackend:
                 http_headers=extra_headers,
                 metadata=metadata,
                 stream=False,
+                parallel_tool_calls=True,
                 reasoning_effort=reasoning_effort,
             )
 
@@ -512,6 +515,7 @@ class MistralBackend:
                     for msg in messages
                 ],
                 temperature=temperature,
+                top_p=1.0 if temperature == 0.0 else UNSET,
                 tools=[self._mapper.prepare_tool(tool) for tool in tools]
                 if tools
                 else None,
@@ -521,6 +525,7 @@ class MistralBackend:
                 else None,
                 http_headers=extra_headers,
                 metadata=metadata,
+                parallel_tool_calls=True,
                 reasoning_effort=reasoning_effort,
             )
             correlation_id = stream.response.headers.get("mistral-correlation-id")

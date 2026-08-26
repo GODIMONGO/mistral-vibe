@@ -57,6 +57,8 @@ def _make_args(**overrides: object) -> argparse.Namespace:
         "resume": None,
     }
     base.update(overrides)
+    if base["worktree"] is not None and "trust" not in overrides:
+        base["trust"] = True
     return argparse.Namespace(**base)
 
 
@@ -291,6 +293,31 @@ def test_worktree_start_prints_progress_to_stderr(
     assert "Removing worktree:" in captured.err
     assert "Removed worktree:" in captured.err
     assert "feature" not in (h.name for h in repo.heads)
+
+
+def test_worktree_rejects_untrusted_source_before_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = tmp_path / "untrusted-repo"
+    project.mkdir()
+    _init_repo(project)
+    monkeypatch.chdir(project)
+    args = _make_args(prompt=None, worktree="feature", trust=False)
+    monkeypatch.setattr(entrypoint_mod, "parse_arguments", lambda: args)
+    entered = False
+
+    def enter_worktree(_args: argparse.Namespace) -> None:
+        nonlocal entered
+        entered = True
+
+    monkeypatch.setattr(entrypoint_mod, "_enter_worktree", enter_worktree)
+
+    with pytest.raises(SystemExit) as exc_info:
+        entrypoint_mod.main()
+
+    assert exc_info.value.code == 2
+    assert not entered
+    assert "requires a trusted source workspace" in capsys.readouterr().err
 
 
 def test_worktree_cleanup_prompt_keeps_dirty_worktree_by_default(

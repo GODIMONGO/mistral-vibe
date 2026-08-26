@@ -198,6 +198,10 @@ class SessionMetadata(BaseModel):
     experiments: EvalResponse | None = None
     import_provenance: dict[str, JsonValue] | None = None
     created_worktree: WorktreeContext | None = None
+    # Private, bounded model context. It is kept in atomic metadata rather than
+    # public transcript JSONL so resume can restore the anti-repeat ledger
+    # without exposing an internal system message in session history.
+    working_memory: dict[str, JsonValue] | None = None
 
 
 StrToolChoice = Literal["auto", "none", "any", "required"]
@@ -524,6 +528,7 @@ class AssistantEvent(BaseEvent):
 class ReasoningEvent(BaseEvent):
     content: str
     message_id: str | None = None
+    status_text: str | None = None
 
 
 class ToolCallEvent(BaseEvent):
@@ -627,6 +632,21 @@ class SessionTitleUpdatedEvent(BaseEvent):
     title: str
 
 
+class MemoryStatusEvent(BaseEvent):
+    status: Literal[
+        "restored",
+        "loaded",
+        "skipped",
+        "stale",
+        "error",
+        "experience_loaded",
+        "experience_saved",
+    ]
+    message: str
+    fast_entries: int = 0
+    persistent_entries: int = 0
+
+
 type SwitchAgentCallback = Callable[[str], Awaitable[None]]
 
 type ClearContextCallback = Callable[[], Awaitable[None]]
@@ -647,6 +667,13 @@ class MessageList(Sequence[LLMMessage]):
     def extend(self, msgs: list[LLMMessage]) -> None:
         for msg in msgs:
             self.append(msg)
+
+    def discard(self, msg: LLMMessage) -> None:
+        with self._lock:
+            for index, candidate in enumerate(self._data):
+                if candidate is msg:
+                    del self._data[index]
+                    return
 
     def on_reset(self, hook: Callable[[], None]) -> None:
         """Register a callback that fires whenever the list is reset."""

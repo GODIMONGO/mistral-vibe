@@ -46,6 +46,17 @@ def test_update_system_prompt_inserts_into_empty_list() -> None:
     assert messages[0].role == Role.system
 
 
+def test_discard_removes_only_the_matching_message() -> None:
+    first = LLMMessage(role=Role.user, content="same")
+    second = LLMMessage(role=Role.user, content="same")
+    messages = MessageList([first, second])
+
+    messages.discard(first)
+    messages.discard(first)
+
+    assert list(messages) == [second]
+
+
 def test_reset_preserving_system_keeps_system_and_replaces_tail() -> None:
     messages = MessageList(
         initial=[

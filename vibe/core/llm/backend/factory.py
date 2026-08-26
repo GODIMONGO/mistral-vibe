@@ -54,5 +54,9 @@ def create_backend(
             fail_fast_on_quota_exhaustion=fail_fast_on_quota_exhaustion,
         )
     return factory(
-        provider=provider, timeout=timeout, enable_otel=enable_otel, on_retry=on_retry
+        provider=provider,
+        timeout=timeout,
+        retry_max_elapsed_time=retry_max_elapsed_time,
+        enable_otel=enable_otel,
+        on_retry=on_retry,
     )

@@ -13,6 +13,8 @@ import tempfile
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Literal
 
+from vibe.core.config._redaction import session_safe_config_snapshot
+from vibe.core.memory import is_working_memory_message
 from vibe.core.session.session_loader import (
     MESSAGES_FILENAME,
     METADATA_FILENAME,
@@ -454,6 +456,14 @@ class SessionLogger:
                 if len(messages) > 0 and messages[0].role == Role.system
                 else None
             )
+            working_memory = next(
+                (
+                    message.model_dump(exclude_none=True, mode="json")
+                    for message in reversed(messages)
+                    if is_working_memory_message(message)
+                ),
+                None,
+            )
             last_message_fingerprint = (
                 self._message_fingerprint(non_system_messages[-1])
                 if non_system_messages
@@ -468,12 +478,13 @@ class SessionLogger:
                 "total_messages": len(non_system_messages),
                 "last_message_fingerprint": last_message_fingerprint,
                 "tools_available": tools_available,
-                "config": config.model_dump(mode="json"),
+                "config": session_safe_config_snapshot(config.model_dump(mode="json")),
                 "agent_profile": {
                     "name": agent_profile.name,
-                    "overrides": agent_profile.overrides,
+                    "overrides": session_safe_config_snapshot(agent_profile.overrides),
                 },
                 "system_prompt": system_prompt,
+                "working_memory": working_memory,
             }
 
             SessionLogger._persist_metadata_sync(metadata_dump, session_dir)

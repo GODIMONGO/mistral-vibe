@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-
 import pytest
 
 from vibe.app_server.events import HistoryEntryAdded
@@ -19,11 +17,7 @@ from vibe.app_server.models import (
     TodoEffectStatus,
 )
 from vibe.cli.textual_ui.app import VibeApp
-from vibe.cli.textual_ui.widgets.chat_input import ChatInputContainer
-from vibe.cli.textual_ui.widgets.task_status_bar import (
-    TaskStatusBar,
-    is_task_clear_request,
-)
+from vibe.cli.textual_ui.widgets.task_status_bar import TaskStatusBar
 from vibe.utils.cache_store import InMemoryCacheStore
 
 
@@ -82,6 +76,16 @@ def test_task_status_bar_groups_and_renders_task_states() -> None:
     assert "▶ Working: Implement status bar" in rendered
     assert "✓ Done: Inspect todo events" in rendered
     assert "○ Waiting: Run UI tests" in rendered
+    assert widget.plain_status() == (
+        "Tasks 1/3 done\n"
+        "Working: Implement status bar\n"
+        "Done: Inspect todo events\n"
+        "Waiting: Run UI tests"
+    )
+
+
+def test_empty_task_status_is_explicit() -> None:
+    assert TaskStatusBar().plain_status() == "No active task plan."
 
 
 def test_completed_todo_output_replaces_stale_call_input() -> None:
@@ -164,13 +168,6 @@ async def test_dismissed_plan_stays_hidden_after_restore() -> None:
     assert restored.state.in_progress == ("New task",)
 
 
-@pytest.mark.parametrize(
-    "text", ["убери все задачи", "Удали задачи!", "clear all tasks", " remove tasks "]
-)
-def test_natural_task_clear_requests_are_recognized(text: str) -> None:
-    assert is_task_clear_request(text)
-
-
 @pytest.mark.asyncio
 async def test_app_updates_task_status_bar_from_live_todo_event(
     vibe_app: VibeApp,
@@ -185,22 +182,3 @@ async def test_app_updates_task_status_bar_from_live_todo_event(
         widget = vibe_app.query_one(TaskStatusBar)
         assert widget.display
         assert widget.state.in_progress == ("Live implementation",)
-
-
-@pytest.mark.asyncio
-async def test_natural_clear_request_is_handled_without_model_turn(
-    vibe_app: VibeApp,
-) -> None:
-    async with vibe_app.run_test():
-        widget = vibe_app.query_one(TaskStatusBar)
-        widget.dismiss_persisted = AsyncMock(return_value=True)
-        vibe_app._handle_user_message = AsyncMock()
-
-        await vibe_app.on_chat_input_container_submitted(
-            ChatInputContainer.Submitted("убери все задачи")
-        )
-
-        widget.dismiss_persisted.assert_awaited_once_with(
-            vibe_app.app_server.session_id
-        )
-        vibe_app._handle_user_message.assert_not_awaited()

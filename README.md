@@ -1,1251 +1,777 @@
-# Mistral Vibe
+# Powerstral
 
-[![PyPI Version](https://img.shields.io/pypi/v/mistral-vibe)](https://pypi.org/project/mistral-vibe)
-[![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/release/python-3120/)
-[![CI Status](https://github.com/mistralai/mistral-vibe/actions/workflows/ci.yml/badge.svg)](https://github.com/mistralai/mistral-vibe/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/mistralai/mistral-vibe)](https://github.com/mistralai/mistral-vibe/blob/main/LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)](https://www.python.org/)
+[![CI](https://github.com/GODIMONGO/powerstral/actions/workflows/ci.yml/badge.svg)](https://github.com/GODIMONGO/powerstral/actions)
+[![Лицензия](https://img.shields.io/github/license/GODIMONGO/powerstral)](LICENSE)
+[![Основа](https://img.shields.io/badge/основа-Mistral%20Vibe%202.24.3-orange)](https://github.com/mistralai/mistral-vibe)
 
-```
-██████████████████░░
-██████████████████░░
-████  ██████  ████░░
-████    ██    ████░░
-████          ████░░
-████  ██  ██  ████░░
-██      ██      ██░░
-██████████████████░░
-██████████████████░░
-```
+**Powerstral** — автономный консольный coding-агент на базе Mistral Vibe. Он
+превращает запрос пользователя в проверяемый план, распределяет независимую
+работу между субагентами, использует отдельные роли advisor и reviewer, работает
+с терминалом, вебом, Chrome и рабочим столом Windows, а также сохраняет полезный
+контекст между компактациями и сессиями.
 
-**Mistral's open-source CLI coding assistant.**
+Powerstral предназначен не только для генерации кода. Его основной сценарий —
+полный инженерный цикл: исследовать проблему, выбрать решение, внести изменения,
+запустить проверки, сопоставить утверждения с доказательствами и продолжить
+работу, если критерии готовности ещё не выполнены.
 
-Mistral Vibe is a command-line coding assistant powered by Mistral's models. It provides a conversational interface to your codebase, allowing you to use natural language to explore, modify, and interact with your projects through a powerful set of tools.
+> [!IMPORTANT]
+> Название продукта и репозитория — **Powerstral**. Для совместимости с Mistral
+> Vibe имена Python-пакета и исполняемых файлов пока сохранены: `mistral-vibe`,
+> `vibe`, `vibe-acp` и `vibe-app-server`.
 
-> [!WARNING]
-> Mistral Vibe works on Windows, but we officially support and target UNIX environments.
+> [!CAUTION]
+> Автономный режим, `auto-approve`, управление компьютером, Chrome CDP и
+> выполнение JavaScript способны менять реальные файлы, приложения и данные
+> сайтов. Используйте их только в доверенной рабочей папке и не сохраняйте
+> секреты в Git, промптах или глобальной памяти.
 
-### One-line install (recommended)
+## Содержание
 
-**Linux and macOS**
+- [Что добавлено и изменено](#что-добавлено-и-изменено)
+- [Автономный цикл](#автономный-цикл)
+- [Harness и роли моделей](#harness-и-роли-моделей)
+- [Vibe Thinking, BOOST и UltraCode](#vibe-thinking-boost-и-ultracode)
+- [Планирование и субагенты](#планирование-и-субагенты)
+- [Проверка результата](#проверка-результата)
+- [Память, опыт и компактация](#память-опыт-и-компактация)
+- [Веб, браузер и управление ПК](#веб-браузер-и-управление-пк)
+- [Модели, OAuth, API и OpenCode Go](#модели-oauth-api-и-opencode-go)
+- [Telegram](#telegram)
+- [Установка и обновление](#установка-и-обновление)
+- [Быстрый старт](#быстрый-старт)
+- [Слеш-команды](#слеш-команды)
+- [Конфигурация](#конфигурация)
+- [Производительность и токены](#производительность-и-токены)
+- [Разработка](#разработка)
+- [Безопасность и ограничения](#безопасность-и-ограничения)
+- [Устранение неполадок](#устранение-неполадок)
+- [Происхождение](#происхождение)
 
-```bash
-curl -LsSf https://mistral.ai/vibe/install.sh | bash
-```
+## Что добавлено и изменено
 
-**Windows**
+Powerstral сохраняет базовые возможности Mistral Vibe и добавляет поверх них
+полноценный agent harness.
 
-First, install uv
+| Возможность | Что изменено | Зачем |
+| --- | --- | --- |
+| Автономные цели | `/goal` запускает анализ, план, выполнение и review | Агент не завершает многошаговую задачу после первого ответа |
+| Анализ намерения | Сначала активная модель определяет сложность запроса | Простой вопрос не запускает дорогой advisor или рой |
+| Goal Advisor | Read-only роль строит критерии приёмки и зависимости | Работа начинается с проверяемого плана |
+| Advisor fallback | При сбое выделенной модели план строит main-модель | Ошибка advisor не останавливает всю цель |
+| Reviewer | Независимая read-only роль проверяет evidence | Снижается риск преждевременного «готово» |
+| Субагенты и рой | `explore`, `worker`, `reviewer` работают параллельно | Независимые исследования и изменения выполняются быстрее |
+| Vibe Thinking | Harness сравнивает маршруты и может сделать pivot | Быстрый нерелевантный ответ не принимается автоматически |
+| BOOST | Максимальная оркестрация и evidence review | Для задач, где качество важнее цены |
+| UltraCode | Максимальный effort и небольшой рой | Для наиболее сложных инженерных задач |
+| Task status | TUI показывает running, done и waiting | Длинная работа остаётся наблюдаемой |
+| Активный ввод | Служебные команды работают во время agent loop | Состояние можно смотреть без «глухого» ожидания |
+| Escape и таймауты | Работа прерывается, зависшие процессы завершаются | SSH, тест или сборка не блокируют сессию навсегда |
+| Windows ConPTY | Фильтруются служебные terminal sequences | Клавиатура не печатает «кракозябры» |
+| Веб-поиск | Public search, загрузка страниц и уровни активности | Актуальные факты проверяются по источникам |
+| Приватность поиска | Пути, `codex://`, IP:port и секреты не уходят в автопоиск | Внутренняя информация остаётся локальной |
+| Chrome CDP | DOM, accessibility, ввод, клики, снимки и `evaluate` | Браузерная автоматизация и UI-тесты |
+| Computer use | Окна, мышь, клавиатура и снимки Windows | Работа с приложениями вне терминала |
+| Глобальная память | Устойчивые правила хранятся между сессиями | Их не нужно повторять в каждом чате |
+| Личный опыт | Локальный SQLite RAG хранит проверенные результаты | После compaction меньше повторных действий |
+| Быстрая память | Цель, план и результаты живут отдельно от transcript | Основной контекст расходуется медленнее |
+| Умная компактация | Сохраняется рабочий профиль, а не сырая история | Меньше потери цели и доказательств |
+| `/model` | Отдельный выбор main, advisor и reviewer | Роли могут использовать разные модели |
+| OpenCode Go | Каталог моделей подключается по одному ключу | Mistral может выполнять, DeepSeek — проверять |
+| OAuth и API | Подписочный вход отделён от пользовательских ключей | Дополнительный API не ломает OAuth-маршрут |
+| Telegram | Управление разрешено только allowlist chat ID | Длинной задачей можно управлять с телефона |
+| Coding DeepWiki | Ленивый каталог навыков и инженерных статей | Справка загружается без огромного системного prompt |
 
-```bash
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
+## Автономный цикл
 
-Then, use uv command below.
+Команда `/goal` запускает не один большой промпт, а последовательность фаз:
 
-### Using uv
+1. Main-модель анализирует запрос и определяет намерение пользователя.
+2. Простые вопросы и локальные команды выполняются напрямую.
+3. Для содержательной цели advisor формирует критерии приёмки и граф задач.
+4. План публикуется в task tracker до изменяющих действий.
+5. Независимые пункты передаются субагентам в пределах выбранного лимита.
+6. Root-агент объединяет результаты и управляет общим состоянием.
+7. Тесты, команды, файлы, веб-источники и UI-проверки становятся evidence.
+8. Reviewer сопоставляет важные утверждения с наблюдаемыми результатами.
+9. При провале review агент возвращается к незакрытым пунктам.
+10. Цель завершается после completion gate либо с описанием доказанного блокера.
 
-```bash
-uv tool install mistral-vibe
-```
+Advisor не запускается вслепую на каждую фразу. Сначала основная модель решает,
+нужна ли сложная оркестрация. Если выделенная модель advisor недоступна,
+Powerstral показывает сообщение о fallback и продолжает активной моделью.
 
-### Using pip
+## Harness и роли моделей
 
-```bash
-pip install mistral-vibe
-```
-
-## Table of Contents
-
-- [Features](#features)
-  - [Built-in Agents](#built-in-agents)
-  - [Subagents and Task Delegation](#subagents-and-task-delegation)
-  - [Interactive User Questions](#interactive-user-questions)
-- [Terminal Requirements](#terminal-requirements)
-- [Quick Start](#quick-start)
-- [Usage](#usage)
-  - [Interactive Mode](#interactive-mode)
-  - [Trust Folder System](#trust-folder-system)
-  - [Programmatic Mode](#programmatic-mode)
-- [Voice Mode](#voice-mode)
-- [Slash Commands](#slash-commands)
-  - [Built-in Slash Commands](#built-in-slash-commands)
-  - [Custom Slash Commands via Skills](#custom-slash-commands-via-skills)
-- [Skills System](#skills-system)
-  - [Creating Skills](#creating-skills)
-  - [Skill Discovery](#skill-discovery)
-  - [Managing Skills](#managing-skills)
-- [Configuration](#configuration)
-  - [Configuration File Location](#configuration-file-location)
-  - [API Key Configuration](#api-key-configuration)
-  - [OpenTelemetry Tracing](#opentelemetry-tracing)
-  - [Custom System Prompts](#custom-system-prompts)
-  - [Custom Agent Configurations](#custom-agent-configurations)
-  - [Tool Management](#tool-management)
-  - [MCP Server Configuration](#mcp-server-configuration)
-  - [Session Management](#session-management)
-  - [Update Settings](#update-settings)
-  - [Custom Vibe Home Directory](#custom-vibe-home-directory)
-- [Editors/IDEs](#editorsides)
-- [Resources](#resources)
-- [Data collection & usage](#data-collection--usage)
-- [License](#license)
-
-## Features
-
-- **Interactive Chat**: A conversational AI agent that understands your requests and breaks down complex tasks.
-- **Powerful Toolset**: A suite of tools for file manipulation, code searching, version control, and command execution, right from the chat prompt.
-  - Read, write, and patch files (`read`, `write_file`, `edit`).
-  - Execute shell commands, with managed shell sessions, polling, and stdin helpers available during rollout.
-  - Recursively search code with `grep` (with `ripgrep` support).
-  - Manage a `todo` list to track the agent's work.
-  - Keep explicit user-approved preferences in global memory across projects.
-  - Ask interactive questions to gather user input (`ask_user_question`).
-  - Delegate tasks to subagents for parallel work (`task`).
-- **Project-Aware Context**: Vibe automatically scans your project's file structure and Git status to provide relevant context to the agent, improving its understanding of your codebase.
-- **Advanced CLI Experience**: Built with modern libraries for a smooth and efficient workflow.
-  - Autocompletion for slash commands (`/`) and file paths (`@`).
-  - Image attachments via `@` mentions — `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` files are sent to vision-capable models (e.g. Mistral Medium 3.5) as native multimodal content.
-  - Persistent command history.
-  - Beautiful Themes.
-- **Highly Configurable**: Customize models, providers, tool permissions, and UI preferences through a simple `config.toml` file.
-- **Safety First**: Features tool execution approval.
-- **Multiple Built-in Agents**: Choose from different agent profiles tailored for specific workflows.
-
-### Built-in Agents
-
-Vibe comes with several built-in agent profiles, each designed for different use cases:
-
-- **`ask`**: Requires approval for tool executions.
-- **`plan`**: Read-only agent for exploration and planning. Auto-approves safe tools like `grep` and `read`.
-- **`accept-edits`**: The default agent. Auto-approves file edits only (`write_file`, `edit`). Useful for code refactoring.
-- **`auto-approve`**: Auto-approves all tool executions. Use with caution.
-- **`autonomous`**: Goal-driven mode with mandatory planning, worker delegation,
-  fresh verification, and a final reviewer. It can operate the computer through
-  Vibe's managed shell and runs with tool approvals bypassed; critical destructive
-  action safeguards still apply.
-
-Use the `--agent` flag to select a different agent:
-
-```bash
-vibe --agent plan
-```
-
-To change the default agent used when `--agent` is not passed, set
-`default_agent` in your `config.toml`:
-
-```toml
-default_agent = "plan"
-```
-
-Valid values are `ask`, `plan`, `accept-edits`, `auto-approve`, `autonomous`,
-`lean` (only when listed in `installed_agents`), or the name of any
-custom agent file in `~/.vibe/agents/` or the project's `.vibe/agents/`
-directory. Subagents such as `explore` are not accepted.
-
-> Note: `default_agent` applies in both interactive and programmatic
-> (`-p` / `--prompt`) sessions. Pass `--auto-approve` or `--yolo` with any
-> agent when a run should approve all tool calls without prompting.
-
-### Subagents and Task Delegation
-
-Vibe supports subagents for delegating tasks. Subagents run independently and can perform specialized work without user interaction, preventing the context from being overloaded.
-
-The `task` tool allows the agent to delegate work to subagents:
-
-```
-> Can you explore the codebase structure while I work on something else?
-
-🤖 I'll use the task tool to delegate this to the explore subagent.
-
-> task(task="Analyze the project structure and architecture", agent="explore")
-```
-
-Create custom subagents by adding `agent_type = "subagent"` to your agent configuration. Vibe comes with a built-in subagent called `explore`, a read-only subagent for codebase exploration and skill loading used internally for delegation.
-
-### Autonomous Goal Mode
-
-Start the autonomous agent with:
-
-```bash
-vibe --agent autonomous
-```
-
-Or switch the current interactive session and start the objective in one step:
+Модель предлагает решения, а harness владеет жизненным циклом, инструментами,
+разрешениями, памятью, компактацией, субагентами и review.
 
 ```text
-/goal <objective>
+turn_start
+  → pre_step
+  → model_request
+  → tool_dispatch
+  → tool_result
+  → turn_stopping
+  → turn_end
 ```
 
-For every non-trivial goal Vibe starts the goal advisor before the main model call.
-The runtime validates its machine-readable dependency graph, writes the todo plan,
-and automatically delegates ready tasks in dependency order. Independent read-only
-tasks can run concurrently up to `max_parallel_subagents`; at most one mutating
-worker runs in a batch so parallel agents cannot overwrite each other's changes.
-After the root agent integrates the results, Vibe automatically runs the final
-reviewer. The UI shows the plan, each subagent, `Running goal advisor`, and
-`Running reviewer`. Completion requires fresh evidence, at least one specific
-`EVIDENCE_CHECKED: <claim> => <evidence>` record, and reviewer `PASS`.
+Композиция включает плагины `session`, `system-prompt`, `model`, `tools`,
+`orchestration`, `context` и `hooks`. Посмотреть реально активное состояние:
 
-The advisor and reviewer can use a stronger configured model without changing the
-main agent model. Any model alias is supported; a Devstral alias is a good default
-when using a Mistral API key. Configure the key for that model's provider with the
-masked setup flow:
+```text
+/harness
+```
+
+Роли:
+
+- **main** — пишет код и управляет выполнением;
+- **goal advisor** — только читает данные и строит план;
+- **reviewer** — только читает и проверяет evidence;
+- **compaction model** — сжимает контекст в рабочий профиль;
+- **subagents** — исследуют или реализуют ограниченную часть задачи.
+
+Main, advisor и reviewer выбираются независимо в `/model`. Пустой алиас advisor
+или reviewer означает fallback на доступную модель.
+
+## Vibe Thinking, BOOST и UltraCode
+
+Powerstral разделяет два слоя размышления:
+
+- **Model thinking** — нативный reasoning-effort провайдера;
+- **Vibe Thinking** — дополнительные итерации внешнего harness.
+
+Vibe Thinking не раскрывает приватную цепочку рассуждений. Пользователь видит
+запуск, количество проходов и короткий результат: продолжить маршрут, сделать
+pivot или запросить недостающие данные.
+
+| Уровень | Проходы | Назначение |
+| --- | ---: | --- |
+| `off` | 0 | Без стратегического слоя |
+| `low` | 1 | Быстрая проверка следующего шага |
+| `medium` | 2 | Сравнение с альтернативой |
+| `high` | 3 | Дополнительный анализ рисков |
+| `max` | 4 | Аудит направления, альтернативы, rehearsal отказа и constraints |
+
+Между полными циклами используется дешёвый Fast Thinking. Он проверяет, не
+противоречит ли следующий шаг цели и уже полученным результатам. Полный цикл
+запускается в начале содержательной задачи, периодически во время работы и после
+значимой ошибки инструмента.
+
+Общая панель:
+
+```text
+/effort
+```
+
+Текстовая форма:
+
+```text
+/effort MODEL_THINKING SUBAGENTS ACCURACY WEB VIBE_THINKING GAUNTLET BOOST EXPERIENCE
+/effort high 4 high high medium on off on
+```
+
+| Параметр | Значения | Влияние |
+| --- | --- | --- |
+| Model thinking | `off`…`max` | Reasoning провайдера |
+| Subagents | `0`–`16` | Верхняя граница параллельных задач |
+| Accuracy | `low`, `medium`, `high`, `max` | Температура `1.0`, `0.7`, `0.2`, `0.0` |
+| Web | `off`…`max` | Активность поиска и проверки |
+| Vibe Thinking | `off`…`max` | Количество стратегических проходов |
+| Gauntlet | `on`, `off` | Цикл builder/critic с планкой качества |
+| BOOST | `on`, `off` | Максимальный evidence-driven pipeline |
+| Experience | `on`, `off` | Локальный continual RAG опыта |
+
+При `temperature=0` Mistral backend автоматически устанавливает `top_p=1`,
+поэтому максимальная точность совместима с greedy sampling API.
+
+Готовые профили:
+
+```text
+/boost исправь проблему и докажи результат
+/ultracode проведи полный аудит проекта
+```
+
+BOOST усиливает оркестрацию, но не превращает модель в другую модель и не даёт
+математической гарантии безошибочности.
+
+## Планирование и субагенты
+
+План содержит статусы `waiting`, `running`, `done` и `failed`. В TUI видны
+текущая задача и общий прогресс.
+
+```text
+/tasks
+/tasks clear
+/subagents
+```
+
+| Профиль | Назначение | Доступ |
+| --- | --- | --- |
+| `explore` | Поиск по коду, документации и вебу | Только чтение |
+| `worker` | Реализация назначенной части | Правки разрешены |
+| `goal-advisor` | План и критерии приёмки | Только чтение |
+| `reviewer` | Независимая проверка | Только чтение |
+
+Лимит `/effort` — верхняя граница, а не требование запускать максимум агентов.
+Изменения одного файла или общего внешнего состояния координирует root-агент.
+
+Пользовательские агенты:
+
+```text
+~/.vibe/agents/NAME.toml
+.vibe/agents/NAME.toml
+```
+
+## Проверка результата
+
+Powerstral проверяет утверждения, а не только формулирует уверенный ответ.
+Evidence может включать:
+
+- результат теста или сборки;
+- статический анализ и type checking;
+- содержимое изменённого файла;
+- HTTP-ответ или состояние сервиса;
+- скриншот или наблюдаемое состояние UI;
+- первичную документацию;
+- отдельный успешный вызов инструмента reviewer.
+
+Reviewer отделяет факты от предположений и связывает важные утверждения с
+доказательствами. Если проверка невозможна, финал должен явно назвать
+непроверенную часть.
+
+## Память, опыт и компактация
+
+### Быстрая память
+
+Хранит состояние текущей работы: цель, план, результаты инструментов, изменённые
+файлы, ошибки и следующий шаг. После compaction агент не должен повторять только
+что выполненные действия.
+
+### Глобальная память
+
+Долговременные сведения находятся в `~/.vibe/memory.json`.
+
+```text
+/memory recall правила работы с моими проектами
+/memory remember всегда использовать uv в Python-проектах
+/memory list
+/memory forget <идентификатор или описание>
+```
+
+Модель может вызвать память сама. В неё нельзя записывать пароли, API-ключи,
+приватные ключи, временные догадки или большие копии tool output.
+
+### Личный опыт
+
+Проверенные краткие результаты хранятся локально:
+
+```text
+~/.vibe/experience.sqlite3
+```
+
+Перед решениями выполняется RAG-поиск релевантного опыта. Это не дообучение
+весов модели и не внешний embedding API. Записи ограничены, дедуплицируются и
+проходят редактирование секретов.
+
+### Компактация
+
+Порог по умолчанию — `200000` токенов. Вместо простой обрезки создаётся профиль:
+
+- исходная цель и ограничения;
+- актуальный план;
+- изменённые файлы;
+- доказанные результаты;
+- неудачные маршруты;
+- незакрытые допущения;
+- следующий проверяемый шаг;
+- карта данных, которые можно перечитать.
+
+Это не увеличивает физическое окно модели, но уменьшает повторения и потерю
+значимого состояния.
+
+## Веб, браузер и управление ПК
+
+### Веб
+
+```text
+/web найди актуальную документацию и проверь реализацию
+```
+
+При высокой web activity поиск используется для актуальных API, документации,
+неизвестных ошибок и проверки внешних утверждений. Факт поиска отображается в
+TUI.
+
+Локальные пути, `file://`, `codex://threads/...`, приватные ключи, bearer-токены,
+Telegram-токены и адреса внутренней инфраструктуры не передаются автоматически
+в публичный поиск. Сначала исследуются локальные источники; внешний запрос должен
+быть обезличен.
+
+### Coding DeepWiki
+
+`deep_wiki` лениво маршрутизирует coding-задачи по каталогу из 1000 виртуальных
+навыков и 10000 комбинаций инженерных статей. Каталог покрывает 25 языков и
+направления от frontend/backend и БД до concurrency, security, performance,
+DevOps, mobile и embedded.
+
+Весь каталог не загружается в prompt. Сначала ищутся релевантные ID, затем
+строится только выбранная статья. Текущие версии библиотек и уязвимости нужно
+дополнительно проверять по первичным веб-источникам.
+
+### Chrome CDP
+
+```text
+/browser открой локальное приложение и проверь форму
+/chrome проверь консоль и сетевые ошибки
+```
+
+Поддерживаются вкладки, навигация, DOM, accessibility tree, клики, ввод,
+скриншоты и ограниченный по размеру произвольный JavaScript через `evaluate`.
+
+Запуск отдельного Chrome на Windows:
+
+```powershell
+& "$env:ProgramFiles\Google\Chrome\Application\chrome.exe" `
+  --remote-debugging-port=9222 `
+  --user-data-dir="$env:TEMP\powerstral-chrome"
+```
+
+### Windows computer use
+
+```text
+/pc открой приложение и проверь состояние
+/computer выполни действия в интерфейсе
+```
+
+Инструмент работает с окнами, контролами, мышью, клавиатурой и снимками экрана.
+Возможности зависят от активной Windows-сессии и разрешений процесса.
+
+## Модели, OAuth, API и OpenCode Go
+
+### Подписочный вход Mistral
+
+При отсутствии авторизации onboarding открывает браузер. Проверить аккаунт:
+
+```text
+/whoami
+```
+
+Выйти и начать новый вход при следующем запуске:
+
+```text
+/logout
+```
+
+### API-ключи
+
+```text
+/api-key
+/api-key ALIAS
+```
+
+Ключ вводится в маскированное поле и сохраняется в `~/.vibe/.env`, а не в
+`config.toml`. Квота Vibe Code и обычный API-биллинг могут различаться.
+
+### Выбор ролей
+
+```text
+/model
+/model main
+/model advisor
+/model reviewer
+```
+
+Например, основной моделью может быть Mistral Medium, а advisor и reviewer —
+DeepSeek через OpenCode Go.
+
+### OpenCode Go
+
+```text
+/opencode-go
+```
+
+После ввода ключа каталог появляется в `/model`. Он включает DeepSeek V4,
+GLM, Kimi, Qwen, MiniMax, Grok и другие модели, поддерживаемые текущим endpoint.
+Рекомендуемый вариант advisor/reviewer —
+`opencode-go/deepseek-v4-flash`.
+
+Если дополнительный провайдер недоступен, используется настроенный fallback.
+Реальная доступность и стоимость определяются подпиской провайдера.
+
+## Telegram
+
+Удалённое управление выключено по умолчанию. Задайте токен и allowlist:
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN = "токен-бота"
+$env:VIBE_TELEGRAM_ALLOWED_CHAT_IDS = "123456789"
+vibe
+```
+
+```text
+/telegram start
+/telegram status
+/telegram chats
+/telegram stop
+```
+
+Токен не выводится в интерфейсе. Если он был раскрыт, отзовите его через
+BotFather и выпустите новый.
+
+## Установка и обновление
+
+Требования: Python 3.12+, [uv](https://docs.astral.sh/uv/), Git и современный
+терминал. Windows нужна для computer use, Chrome remote debugging — для CDP.
+
+### Windows
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+git clone https://github.com/GODIMONGO/powerstral.git
+cd powerstral
+uv tool install --editable . --force
+vibe --version
+```
+
+### Linux и macOS
 
 ```bash
-vibe --add-api-key devstral-small
+curl -LsSf https://astral.sh/uv/install.sh | sh
+git clone https://github.com/GODIMONGO/powerstral.git
+cd powerstral
+uv tool install --editable . --force
+vibe --version
 ```
 
-From an active Vibe session, run `/api-key` to select a configured model and
-enter its key in a masked field. Use `/api-key ALIAS` to skip the picker.
+> [!WARNING]
+> `uv tool install mistral-vibe` устанавливает upstream, а не Powerstral. Этот
+> форк нужно устанавливать из checkout или Git URL репозитория Powerstral.
 
-Then add the autonomy policy to `config.toml`:
+Обновление:
+
+```powershell
+git pull
+uv sync --all-extras
+uv tool install --editable . --force
+vibe --version
+```
+
+Перед `--force` закройте `vibe`, `vibe-acp` и `vibe-app-server`: Windows может
+удерживать их исполняемые файлы.
+
+## Быстрый старт
+
+Запускайте Powerstral из каталога проекта:
+
+```powershell
+cd C:\путь\к\проекту
+vibe
+```
+
+```text
+/goal найди причину ошибки, исправь её, запусти тесты и проверь результат
+```
+
+```text
+/ultracode проведи полный аудит и исправь подтверждённые проблемы
+```
+
+Программный режим:
+
+```powershell
+vibe -p "проверь проект и выведи проблемы"
+vibe --agent autonomous -p "исправь тесты и проверь" --auto-approve
+```
+
+## Слеш-команды
+
+### Автономность и качество
+
+| Команда | Назначение |
+| --- | --- |
+| `/goal <цель>` | Планирование, выполнение и review |
+| `/effort` | Thinking, субагенты, точность, веб, Gauntlet, BOOST и опыт |
+| `/boost [цель]` | Включить BOOST или выполнить цель |
+| `/ultracode [цель]` | Максимальный профиль и рой |
+| `/thinking` | Выбрать reasoning модели |
+| `/tasks` | Показать план |
+| `/tasks clear` | Очистить план |
+| `/subagents` | Активные и недавние субагенты |
+| `/harness` | Плагины, capabilities и фаза |
+| `/status` | Статистика агента |
+| `/retry [уточнение]` | Продолжить прерванный ответ |
+
+### Модели и доступ
+
+| Команда | Назначение |
+| --- | --- |
+| `/model [main\|advisor\|reviewer]` | Центр выбора моделей |
+| `/api-key [алиас]` | Добавить или заменить API-ключ |
+| `/opencode-go` | Подключить OpenCode Go |
+| `/whoami` | Аккаунт, workspace и тариф Mistral |
+| `/logout` | Выйти из Mistral и завершить приложение |
+
+### Инструменты
+
+| Команда | Назначение |
+| --- | --- |
+| `/web <цель>` | Веб-исследование с evidence |
+| `/browser`, `/chrome <цель>` | Chrome/CDP |
+| `/pc`, `/computer <цель>` | Рабочий стол Windows |
+| `/memory`, `/remember <запрос>` | Глобальная память |
+| `/telegram`, `/tg start\|stop\|status\|chats` | Telegram remote |
+| `/mcp`, `/connectors` | MCP и коннекторы |
+| `/loop <интервал> <промпт>` | Периодический запуск |
+| `/loop list` | Список циклов |
+| `/loop cancel <id\|all>` | Остановить цикл |
+
+### Сессия и интерфейс
+
+| Команда | Назначение |
+| --- | --- |
+| `/help` | Встроенная справка |
+| `/config` | Настройки |
+| `/reload` | Перечитать конфиг, инструкции и skills |
+| `/clear`, `/new` | Новая беседа |
+| `/compact [указания]` | Ручная компактация |
+| `/resume`, `/continue`, `/chats` | Сохранённые сессии |
+| `/rename` | Переименовать сессию |
+| `/rewind` | Вернуться к сообщению |
+| `/copy` | Скопировать последний ответ |
+| `/paste-image` | Вставить изображение |
+| `/log` | Путь к журналу |
+| `/log-level` | Уровень логирования |
+| `/debug` | Отладочная консоль |
+| `/theme` | Тема |
+| `/voice` | Голос |
+| `/proxy-setup` | Proxy и SSL |
+| `/exit`, `exit`, `quit`, `:q` | Завершить приложение |
+
+Служебные команды вроде `/status`, `/tasks`, `/subagents`, `/harness`, `/model`
+и `/effort` используют side channel. Новый обычный промпт во время работы
+ставится в очередь и отображается в TUI.
+
+| Клавиша | Действие |
+| --- | --- |
+| `Enter` | Отправить сообщение |
+| `Ctrl+J`, `Shift+Enter` | Новая строка |
+| `Esc` | Прервать работу или закрыть окно |
+| `Esc Esc` | Rewind при пустом вводе |
+| `Ctrl+C` | Очистить ввод, прервать или выйти |
+| `Ctrl+O` | Свернуть или развернуть tool output |
+| `Shift+Tab` | Переключить профиль агента |
+| `Ctrl+G` | Внешний редактор ввода |
+
+## Конфигурация
+
+Пользовательский файл — `~/.vibe/config.toml`, проектный —
+`.vibe/config.toml`.
+
+Пример без обязательного дополнительного API:
 
 ```toml
+default_agent = "autonomous"
+active_model = "mistral-medium-3.5"
+fallback_model = ""
+auto_compact_threshold = 200000
+
 [autonomy]
 enabled = true
-aggressiveness = "high"       # low | medium | high | max
-goal_advisor_model = "devstral-small"
-reviewer_model = "devstral-small" # defaults to the advisor model
-max_parallel_subagents = 4        # 0 disables subagents; maximum 16
-max_live_child_runtimes = 8
-max_subagent_result_chars = 8192  # compact head+tail result retained in root context
+aggressiveness = "max"
+goal_advisor_model = ""
+reviewer_model = ""
+vibe_thinking = "high"
 max_review_retries = 3
+max_parallel_subagents = 4
+max_live_child_runtimes = 8
+max_subagent_result_chars = 8192
+web_search_activity = "high"
+gauntlet_loop = false
+boost_mode = false
+personal_experience = true
 require_worker = true
 require_review = true
-```
 
-Vibe keeps autonomous runs token-efficient by compacting long objectives before
-reusing them across advisor, worker, and reviewer calls, deduplicating reviewer
-evidence, and retaining the useful head and final verdict of oversized subagent
-results. New models auto-compact at 200,000 context tokens by default; lower
-`auto_compact_threshold` per model when optimizing a long-running session for
-minimum repeated input.
+[tools.bash]
+permission = "always"
+default_timeout = 300
 
-Run `/effort` to open the compact slider panel. Thinking (`off` through `max`),
-the `0–16` subagent limit, answer accuracy, and web-search activity are independent.
-Accuracy maps `low|medium|high|max` to model temperatures `1.0|0.7|0.2|0.0`;
-higher accuracy means less sampling randomness. Web activity supports
-`off|low|medium|high|max`: `off` removes the tool, while higher levels make the
-agent increasingly proactive about online verification. The direct form is
-`/effort THINKING SUBAGENTS ACCURACY WEB`. The UltraCode row applies `max` to all
-four controls. `/ultracode <objective>` applies that preset before running a
-difficult objective; `/ultracode` without an objective opens the same panel with
-UltraCode selected.
+[tools.web_search]
+permission = "always"
 
-While a todo plan exists, a persistent task status bar above the input shows
-the active task, completed tasks, waiting tasks, and cancelled tasks. It updates
-from live todo events and restores the latest plan when a session is resumed.
-Run `/tasks clear` or type `убери все задачи` to dismiss the current plan without
-calling the model; the dismissal persists for that session until a new todo plan
-is created.
-
-`low` minimizes concurrency and review retries; `max` uses the configured limits
-and refreshes compact context most often. Subagent output and the number of live
-child runtimes are bounded; completed evicted sessions remain persisted and are
-loaded again on demand. If the role model uses another provider, define that
-provider/model normally and run `vibe --add-api-key ALIAS` with its exact alias.
-Credentials stay in the environment/keyring flow and are redacted from config
-introspection.
-
-### Global Memory
-
-Vibe can keep short, explicit notes across projects and restarts. Ask it to
-"remember" a durable preference, to show global memory, or to forget an entry by
-the stable ID returned by the `memory` tool. New sessions automatically receive a
-bounded memory section as potentially stale context, so the agent must still
-verify factual claims before relying on them.
-
-Memory is stored in `~/.vibe/memory.json`, with at most 100 entries, 2,000
-characters per entry, and a 12,000-character prompt budget. Duplicate notes are
-deduplicated. The tool refuses likely API keys, passwords, private keys, and
-tokens; do not use global memory for credentials, payment data, transient task
-state, or unverified assumptions.
-
-```toml
 [tools.memory]
-permission = "ask" # use "always" only when autonomous memory writes are desired
-```
+permission = "always"
 
-### Computer Use (Windows)
-
-On Windows, the built-in `computer_use` tool can observe visible windows and
-controls, inspect a visual desktop capture, focus a window, click, type Unicode
-text, press key chords, and scroll. It uses the existing pinned `pywin32` runtime
-and loads Win32 modules only when invoked. Mutating actions use the normal tool
-permission flow; observation and screenshots are read-only. Configure it with:
-
-```toml
 [tools.computer_use]
-permission = "ask" # use "always" only for an explicitly autonomous desktop session
-max_windows = 24
-max_controls = 80
-max_text_chars = 4000
-```
+permission = "ask"
 
-The latest screenshot overwrites one `computer-use-latest.png` file in the
-session scratchpad to bound disk usage. Vibe attaches completed captures to the
-next request when the active model supports images; text-only models still receive
-structured window/control state. Tool arguments are session-visible, so the agent
-must never enter passwords, API keys, payment details, or other secrets. Worker
-subagents do not receive this tool: autonomous desktop tasks stay on the root agent,
-which owns the single local mouse and keyboard. A short capability question such as
-"can you control my computer?" bypasses autonomous planning and is answered directly.
-
-### Chrome CDP Control
-
-The built-in `chrome_cdp` tool manages a Chrome instance started with a local
-DevTools endpoint. It lists tabs, opens and navigates pages, reads a bounded
-accessibility snapshot, clicks and types by node ID, captures screenshots, and
-executes arbitrary page JavaScript with `evaluate`. Both the HTTP endpoint and
-target WebSocket must use explicit loopback IP addresses; remote endpoints and
-redirects are rejected.
-
-```toml
 [tools.chrome_cdp]
-permission = "ask" # use "always" for deliberately unattended local control
+permission = "ask"
 endpoint = "http://127.0.0.1:9222"
 ```
 
-Launch a separate Chrome debugging profile on Windows, then use `/browser`:
-
-```powershell
-chrome.exe --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 `
-  --user-data-dir="$env:TEMP\vibe-chrome-cdp"
-```
-
-`evaluate` has the same access as page JavaScript and can read or change data in
-the signed-in browser profile. It has no confirmation beyond the normal
-`chrome_cdp` permission, so keep the endpoint local and prefer a dedicated profile.
-
-### Telegram Remote
-
-Telegram control is opt-in and never starts automatically. Set the bot token in
-`TELEGRAM_BOT_TOKEN` and a strict comma-separated allowlist in
-`VIBE_TELEGRAM_ALLOWED_CHAT_IDS`, then run `/telegram start` locally. Authorized
-chats can submit prompts and slash commands and receive the resulting answer.
-
-```powershell
-$env:TELEGRAM_BOT_TOKEN = "your-bot-token"
-$env:VIBE_TELEGRAM_ALLOWED_CHAT_IDS = "123456789"
-vibe
-# Inside Vibe: /telegram start
-```
-
-Use `/telegram status|chats|stop` to inspect or disarm it. `/status`, `/subagents`,
-and `/chats` provide compact remote views; process lifecycle commands remain local.
-Unauthorized chats are ignored and the token is never stored in `config.toml`.
-
-### Web Search
-
-The built-in `web_search` tool can use Mistral's hosted search or a bounded public
-fallback that needs no separate API key. In `auto` mode Vibe tries Mistral when a
-credential is available and falls back on rate limits or service errors. Autonomous
-`explore`, advisor, reviewer, and worker subagents can use the same tool.
-
-```toml
-[tools.web_search]
-permission = "ask"
-engine = "auto" # auto | mistral | public
-timeout = 30
-max_results = 5 # 1-10
-
-[autonomy]
-web_search_activity = "medium" # off | low | medium | high | max
-```
-
-Use `engine = "public"` for OAuth-only/no-key operation without spending hosted
-search tokens. Public responses are capped at 512 KiB and results are bounded by
-`max_results` to limit memory and context use.
-
-### Interactive User Questions
-
-The `ask_user_question` tool allows the agent to ask you clarifying questions during its work. This enables more interactive and collaborative workflows.
-
-```
-> Can you help me refactor this function?
-
-🤖 I need to understand your requirements better before proceeding.
-
-> ask_user_question(questions=[{
-    "question": "What's the main goal of this refactoring?",
-    "options": [
-        {"label": "Performance", "description": "Make it run faster"},
-        {"label": "Readability", "description": "Make it easier to understand"},
-        {"label": "Maintainability", "description": "Make it easier to modify"}
-    ]
-}])
-```
-
-The agent can ask multiple questions at once, displayed as tabs. Each question supports 2-4 options plus an automatic "Other" option for free text responses.
-
-## Terminal Requirements
-
-Vibe's interactive interface requires a modern terminal emulator. Recommended terminal emulators include:
-
-- **WezTerm** (cross-platform)
-- **Alacritty** (cross-platform)
-- **Ghostty** (Linux and macOS)
-- **Kitty** (Linux and macOS)
-
-Most modern terminals should work, but older or minimal terminal emulators may have display issues.
-
-## Quick Start
-
-1. Navigate to your project's root directory:
-
-   ```bash
-   cd /path/to/your/project
-   ```
-
-2. Run Vibe:
-
-   ```bash
-   vibe
-   ```
-
-3. If this is your first time running Vibe, it will:
-   - Use built-in defaults without creating a configuration file until you
-     save a setting
-   - Prompt you to enter your API key if it's not already configured
-   - Save your API key to `~/.vibe/.env` for future use
-
-   Alternatively, you can configure your API key separately using `vibe --setup`.
-
-4. Start interacting with the agent!
-
-   ```
-   > Can you find all instances of the word "TODO" in the project?
-
-   🤖 The user wants to find all instances of "TODO". The `grep` tool is perfect for this. I will use it to search the current directory.
-
-   > grep(pattern="TODO", path=".")
-
-   ... (grep tool output) ...
-
-   🤖 I found the following "TODO" comments in your project.
-   ```
-
-## Usage
-
-### Interactive Mode
-
-Simply run `vibe` to enter the interactive chat loop.
-
-- **Multi-line Input**: Press `Ctrl+J` or `Shift+Enter` for select terminals to insert a newline.
-- **File Paths**: Reference files in your prompt using the `@` symbol for smart autocompletion (e.g., `> Read the file @src/agent.py`).
-- **Shell Commands**: Prefix any command with `!` to execute it directly in your shell, bypassing the agent (e.g., `> !ls -l`).
-- **External Editor**: Press `Ctrl+G` to edit your current input in an external editor.
-- **Tool Output Toggle**: Press `Ctrl+O` to toggle the tool output view.
-- **Todo View Toggle**: Press `Ctrl+T` to toggle the todo list view.
-- **Debug Console**: Press `Ctrl+\` to toggle the debug console.
-- **Agent Selection**: Press `Shift+Tab` to cycle through agents (ask, plan, ...).
-- **Exit**: Type `/exit`, `exit`, `quit`, `:q`, or `:quit` in the input box, or press `Ctrl+C` / `Ctrl+D` twice within ~1 second. Set `ask_confirmation_on_exit = false` (or toggle it in `/config`) to make `Ctrl+D` quit on the first press; `Ctrl+C` always requires confirmation.
-
-### Copying & Text Selection
-
-- **Copy**: Use `Ctrl+Y` or `Ctrl+Shift+C` to copy the current selection to clipboard. With autocopy enabled (default via `autocopy_to_clipboard = true`), mouse selection automatically copies on release and shows a brief confirmation.
-- **Multi-click selection**: Double-click selects a word, triple-click selects the paragraph. Dragging extends the selection at the same granularity.
-
-You can start Vibe with a prompt using the following command:
-
-```bash
-vibe "Refactor the main function in cli/main.py to be more modular."
-```
-
-### Trust Folder System
-
-Vibe includes a trust folder system to ensure you only run the agent in directories you trust. When you first run Vibe in a new directory which contains a `.vibe` subfolder, it may ask you to confirm whether you trust the folder.
-
-Trusted folders are remembered for future sessions. You can manage trusted folders through its configuration file `~/.vibe/trusted_folders.toml`.
-
-This safety feature helps prevent accidental execution in sensitive directories.
-
-### Programmatic Mode
-
-You can run Vibe non-interactively by piping input or using the `--prompt` flag. This is useful for scripting.
-
-```bash
-vibe --prompt "Refactor the main function in cli/main.py to be more modular."
-```
-
-By default, it uses your configured `default_agent` (`accept-edits` unless changed).
-To approve all tool calls without prompting, pass `--auto-approve` or `--yolo`
-(also available for interactive sessions):
-
-```bash
-vibe --prompt "Refactor the main function in cli/main.py to be more modular." --auto-approve
-```
-
-#### Programmatic Mode Options
-
-When using `--prompt`, you can specify additional options:
-
-- **`--max-turns N`**: Limit the maximum number of assistant turns. The session will stop after N turns.
-- **`--max-price DOLLARS`**: Set a maximum cost limit in dollars. The session will be interrupted if the cost exceeds this limit.
-- **`--max-tokens N`**: Set a maximum cumulative LLM token budget for the session, counting both prompt and completion tokens. The session will be interrupted if usage exceeds this limit.
-- **`--agent NAME`**: Select the agent profile for this run.
-- **`--auto-approve`, `--yolo`**: Approves all tool calls without prompting, including in interactive sessions. Can be combined with any `--agent` value.
-- **`--enabled-tools TOOL`**: Enable specific tools. In programmatic mode, this disables all other tools. Can be specified multiple times. Supports exact names, glob patterns (e.g., `bash*`), or regex with `re:` prefix (e.g., `re:^serena_.*$`).
-- **`--disabled-tools TOOL`**: Disable specific tools after `--enabled-tools` filtering. Can be specified multiple times. Supports exact names, glob patterns (e.g., `bash*`), or regex with `re:` prefix (e.g., `re:^serena_.*$`).
-- **`--output FORMAT`**: Set the output format. Options:
-  - `text` (default): Human-readable text output
-  - `json`: All messages as JSON at the end
-  - `streaming`: Newline-delimited JSON per message
-
-Example:
-
-```bash
-vibe --prompt "Analyze the codebase" --max-turns 5 --max-price 1.0 --max-tokens 50000 --output json
-```
-
-## Voice Mode
-
-> [!WARNING]
-> Voice mode is experimental and may change in future releases.
-
-Voice mode allows you to dictate input using your microphone instead of typing.
-
-### Activating Voice Mode
-
-Toggle voice mode on or off with the `/voice` slash command:
-
-```
-> /voice
-```
-
-### Recording Shortcuts
-
-| Shortcut | Action           |
-| -------- | ---------------- |
-| `Ctrl+R` | Start recording  |
-| Any key  | Stop recording   |
-| `Escape` | Cancel recording |
-| `Ctrl+C` | Cancel recording |
-
-## Slash Commands
-
-Use slash commands for meta-actions and configuration changes during a session.
-
-### Built-in Slash Commands
-
-Use `/api-key` to select a configured model and securely add or replace its API
-key. `/api-key ALIAS` opens the masked key field directly for that alias.
-
-Vibe provides several built-in slash commands. Use slash commands by typing them in the input box:
-
-```
-> /help
-```
-
-If a model response is interrupted by a backend error, use `/retry` to continue
-from the partial response. Add optional guidance after the command, for example
-`/retry keep the conclusion concise`.
-
-Use `/goal <objective>` to switch to the autonomous agent and start a goal with
-mandatory planning, delegation, fresh verification, and final review. If another
-turn is running, the command waits in the main input queue.
-
-Additional autonomous commands include `/subagents`, `/effort`,
-`/ultracode [objective]`, `/pc`, `/browser`, `/web`, and
-`/memory`. `/chats` opens the local session picker. `/logout` removes the saved
-Mistral credential and exits so the next launch starts browser sign-in. `/exit`
-only closes the application. Browser sign-in does not launch the browser
-automatically: it immediately displays an openable, copyable URL and a locally
-generated terminal QR code. The built-in `/web-engineering` skill adds
-primary-source research,
-security, accessibility, performance, and real-browser verification.
-
-### Custom Slash Commands via Skills
-
-You can define your own slash commands through the skills system. Skills are reusable components that extend Vibe's functionality.
-
-To create a custom slash command:
-
-1. Create a skill directory with a `SKILL.md` file
-2. Set `user-invocable = true` in the skill metadata
-3. Define the command logic in your skill
-
-Example skill metadata:
-
-```markdown
----
-name: my-skill
-description: My custom skill with slash commands
-user-invocable: true
----
-```
-
-Custom slash commands appear in the autocompletion menu alongside built-in commands.
-
-## Skills System
-
-Vibe's skills system allows you to extend functionality through reusable components. Skills can add new tools, slash commands, and specialized behaviors.
-
-Vibe follows the [Agent Skills specification](https://agentskills.io/specification) for skill format and structure.
-
-### Creating Skills
-
-Skills are defined in directories with a `SKILL.md` file containing metadata in YAML frontmatter. For example, `~/.vibe/skills/code-review/SKILL.md`:
-
-```markdown
----
-name: code-review
-description: Perform automated code reviews
-license: MIT
-compatibility: Python 3.12+
-user-invocable: true
-allowed-tools:
-  - read
-  - grep
-  - ask_user_question
----
-
-# Code Review Skill
-
-This skill helps analyze code quality and suggest improvements.
-```
-
-### Skill Discovery
-
-Vibe discovers skills from multiple locations:
-
-1. **Custom paths**: Configured in `config.toml` via `skill_paths`
-2. **Standard Agent Skills path** (project root, trusted folders only): `.agents/skills/` — [Agent Skills](https://agentskills.io) standard
-3. **Local project skills** (project root, trusted folders only): `.vibe/skills/` in your project
-4. **Global skills directories**: `~/.vibe/skills/` and `~/.agents/skills/`
-
-```toml
-skill_paths = ["/path/to/custom/skills"]
-```
-
-### Managing Skills
-
-Enable or disable skills using patterns in your configuration:
-
-```toml
-# Enable specific skills
-enabled_skills = ["code-review", "test-*"]
-
-# Disable specific skills
-disabled_skills = ["experimental-*"]
-```
-
-Skills support the same pattern matching as tools (exact names, glob patterns, and regex).
-
-## Configuration
-
-### Configuration File Location
-
-Vibe is configured via a `config.toml` file. It looks for this file first in `./.vibe/config.toml` and then falls back to `~/.vibe/config.toml`.
-
-### Theme
-
-The default `auto` theme follows the terminal background when it can be detected, then the operating-system light/dark preference. Choose another theme with `/theme` or set it explicitly:
-
-```toml
-theme = "dracula"
-```
-
-### API Key Configuration
-
-To use Vibe, you'll need a Mistral API key. You can obtain one by signing up at [https://console.mistral.ai](https://console.mistral.ai).
-
-You can configure your API key using `vibe --setup`, or through one of the methods below.
-
-Vibe supports multiple ways to configure your API keys:
-
-1. **Interactive Setup (Recommended for first-time users)**: When you run Vibe for the first time or if your API key is missing, Vibe will prompt you to enter it. The key will be securely saved to `~/.vibe/.env` for future sessions.
-
-2. **Environment Variables**: Set your API key as an environment variable:
-
-   ```bash
-   export MISTRAL_API_KEY="your_mistral_api_key"
-   ```
-
-3. **`.env` File**: Create a `.env` file in `~/.vibe/` and add your API keys:
-
-   ```bash
-   MISTRAL_API_KEY=your_mistral_api_key
-   ```
-
-   Vibe automatically loads API keys from `~/.vibe/.env` on startup. Environment variables take precedence over the `.env` file if both are set.
-
-**Note**: The `.env` file is specifically for API keys and other provider credentials. General Vibe configuration should be done in `config.toml`.
-
-#### Automatic fallback to your API
-
-Bundled Mistral access can be used as the primary enhanced model while a model
-paid for with your own API key remains available as a fallback. Set
-`fallback_model` to the exact configured model alias:
-
-```toml
-active_model = "mistral-medium-3.5"
-fallback_model = "my-user-model"
-
-[[providers]]
-name = "user-api"
-api_base = "https://your-provider.example/v1"
-api_key_env_var = "USER_MODEL_API_KEY"
-api_style = "openai"
-
-[[models]]
-name = "provider-model-name"
-provider = "user-api"
-alias = "my-user-model"
-```
-
-Store that provider's credential with the masked setup flow:
-
-```bash
-vibe --add-api-key my-user-model
-```
-
-This is the short form of
-`vibe --setup --setup-model my-user-model`. Re-run it to replace an expired key;
-the secret is entered in a password field and is never passed on the command line.
-
-Fallback is session-sticky after Mistral returns an authentication, payment, or
-quota-exhaustion error (HTTP 401/402, or a quota-specific 403/429). Ordinary rate
-limits, server errors, invalid requests, and context-limit errors remain visible.
-For streaming calls, Vibe switches only before the first response chunk, avoiding
-mixed answers. Set `fallback_model = ""` to disable the feature.
-
-### Custom Domains
-
-If you use a Mistral-compatible deployment instead of the default `console.mistral.ai` / `api.mistral.ai`, you can point browser sign-in at it. The credential is still a Mistral API key.
-
-Run `vibe --setup`, choose **Sign in with link or QR** then **Other**, enter your login domain, and open the displayed link or scan its QR code. A bare domain is prefixed with `https://`, and the auth API base is derived as `DOMAIN/api`. The overridden `mistral` provider is saved to your user config so subsequent runs reuse it.
-
-**Note**: the wizard reads any custom `browser_auth_base_url` already set in `config.toml`. Choosing **Other** pre-fills that configured domain so you can confirm or edit it. Choosing **Mistral AI** while a custom domain is configured warns you first — press **Enter** again to confirm the reset to the default domain, which is then persisted.
-
-### TLS and Corporate Certificate Authorities
-
-By default, Vibe uses the bundled `certifi` certificate roots for outbound HTTPS requests. If your organization installs private certificate authorities in the operating system trust store, you can opt in to the system trust store in `config.toml`:
-
-```toml
-enable_system_trust_store = true
-```
-
-`SSL_CERT_FILE` and `SSL_CERT_DIR` are still supported and are loaded as additional trust anchors.
-
-### OpenTelemetry Tracing
-
-Vibe can export traces for agent, model, and tool operations over OTLP/HTTP. Enable tracing in `config.toml`:
-
-```toml
-enable_otel = true
-```
-
-By default, Vibe sends traces to the telemetry endpoint associated with the configured Mistral provider and authenticates with that provider's API key. `enable_telemetry` must also remain enabled.
-
-To send traces to another collector, configure its base URL. Vibe appends `/v1/traces`; configure authentication with the standard `OTEL_EXPORTER_OTLP_*` environment variables when needed.
-
-```toml
-enable_otel = true
-otel_endpoint = "https://collector.example.com:4318"
-```
-
-Span attributes are redacted on the client before export. The default mode redacts sensitive values, `strict` redacts sensitive attributes entirely, and `none` disables redaction:
-
-```toml
-otel_redaction = "default" # "default", "strict", or "none"
-```
-
-Use `none` only when the collector is trusted to receive potentially sensitive prompt, response, and tool data.
-
-### Custom System Prompts
-
-You can create `AGENTS.md` files to add custom instructions. You can also replace the entire system prompt.
-
-Place `AGENTS.md` files in:
-- `~/.vibe/AGENTS.md` — user-level instructions for all projects
-- Project directories — project-specific instructions, loaded from cwd up to the trust root
-
-Priority: closer directories override more distant ones. Instructions in `AGENTS.md` override the default system prompt. Files are only loaded for trusted folders.
-
-Custom system prompts entirely replace the default one (`prompts/cli.md`). Create a markdown file in the `~/.vibe/prompts/` directory with your custom prompt content.
-
-To use a custom system prompt, set the `system_prompt_id` in your configuration to match the filename (without the `.md` extension):
-
-```toml
-# Use a custom system prompt
-system_prompt_id = "my_custom_prompt"
-```
-
-This will load the prompt from `~/.vibe/prompts/my_custom_prompt.md`.
-
-Project-local prompts in `.vibe/prompts/` are also supported and override user-level prompts with the same name. This applies to all custom prompts (system and compaction).
-
-### Custom Compaction Prompts
-
-Compaction uses the built-in prompt at `prompts/compact.md` by default. You can replace it with a custom prompt from `~/.vibe/prompts/` (or `.vibe/prompts/`) using the same resolution rules as system prompts.
-
-To use a custom compaction prompt, set `compaction_prompt_id` in your configuration to match the filename (without the `.md` extension):
-
-```toml
-# Use a custom compaction prompt
-compaction_prompt_id = "my_compaction_prompt"
-```
-
-Any extra instructions passed to `/compact ...` are appended after the configured compaction prompt.
-
-Compaction keeps the same session and visible conversation. Later model requests
-use the latest compacted context followed by newer messages.
-
-### Custom Agent Configurations
-
-You can create custom agent configurations for specific use cases (e.g., red-teaming, specialized tasks) by adding agent-specific TOML files in the `~/.vibe/agents/` directory.
-
-To use a custom agent, run Vibe with the `--agent` flag:
-
-```bash
-vibe --agent my_custom_agent
-```
-
-Vibe will look for a file named `my_custom_agent.toml` in the agents directory and apply its configuration.
-
-Example custom agent configuration (`~/.vibe/agents/redteam.toml`):
-
-```toml
-# Custom agent configuration for red-teaming
-active_model = "mistral-medium-3.5"
-system_prompt_id = "redteam"
-
-# Disable some tools for this agent
-disabled_tools = ["edit", "write_file"]
-
-# Override tool permissions for this agent
-[tools.bash]
-permission = "always"
-
-[tools.read]
-permission = "always"
-```
-
-Note: This implies that you have set up a redteam prompt named `~/.vibe/prompts/redteam.md`.
-
-### Tool Management
-
-The built-in shell surface is controlled by the `managed_shell_tools_enabled` config
-field and the `vibe_cli_managed_shell_tools` GrowthBook experiment. The default variant
-keeps the legacy one-shot `bash` tool, including its existing Windows behavior.
-The managed variant exposes OS-native shell tools:
-POSIX systems, including WSL where Vibe runs as Linux, get managed `bash`,
-`bash_output`, `bash_stdin`, `bash_sessions`, and `bash_log_file`; native Windows
-gets `git_bash`, `git_bash_output`, `git_bash_stdin`, `git_bash_sessions`, and
-`git_bash_log_file` when Git Bash is available. If Git Bash is unavailable,
-native Windows falls back to `powershell`, `powershell_output`,
-`powershell_stdin`, `powershell_sessions`, and `powershell_log_file`.
-
-Managed shell sessions return a `session_id`, inline output, a cursor for polling
-more output, and a log path under `~/.vibe/shell-tool/sessions/`. Long-running
-commands can be left alive with `background = true`, and interactive commands can
-be driven with the matching stdin tool.
-
-POSIX `bash` reads permissions, allowlists, and denylists from `[tools.bash]`.
-Native Windows `git_bash` reads them from `[tools.git_bash]`; native Windows
-`powershell` reads them from `[tools.powershell]`. Neither Windows tool reads
-`[tools.bash]`. Git Bash is preferred when Vibe can resolve a usable `bash.exe`
-from PATH, Git for Windows, or standard Git install locations. If Git Bash is
-unavailable, the PowerShell resolution order is `pwsh.exe`, then
-`powershell.exe`. `cmd.exe` is not used by the managed Windows shell tools.
-
-```toml
-[tools.git_bash]
-permission = "ask"
-shell = "C:\\Program Files\\Git\\bin\\bash.exe"
-
-[tools.powershell]
-permission = "ask"
-shell = "powershell.exe"
-```
-
-The rollout assignment is server-managed and is not a `config.toml` option.
-
-#### Enable/Disable Tools with Patterns
-
-You can control which tools are active using `enabled_tools` and `disabled_tools`.
-These fields support exact names, glob patterns, and regular expressions.
-When both are set, `enabled_tools` first narrows the tool set, then
-`disabled_tools` removes matching tools from that set.
-
-Examples:
-
-```toml
-# Only enable tools that start with "serena_" (glob)
-enabled_tools = ["serena_*"]
-
-# Regex (prefix with re:) — matches full tool name (case-insensitive)
-enabled_tools = ["re:^serena_.*$"]
-
-# Disable a group with glob; everything else stays enabled
-disabled_tools = ["mcp_*", "grep"]
-```
-
-Notes:
-
-- MCP tool names use underscores, e.g., `serena_list` not `serena.list`.
-- Regex patterns are matched against the full tool name using fullmatch.
-
-### MCP Server Configuration
-
-You can configure MCP (Model Context Protocol) servers to extend Vibe's capabilities. Add MCP server configurations under the `mcp_servers` section:
-
-Remote MCP servers can be added non-interactively from the shell. Static auth
-is selected when `--api-key-env` or `--header` is provided; otherwise the
-server uses OAuth and starts browser login by default.
-
-```bash
-vibe mcp add mistralai \
-  --url https://api.mistral.ai/mcp \
-  --transport streamable-http \
-  --api-key-env MISTRAL_API_KEY
-
-vibe mcp add linear \
-  --url https://mcp.linear.app/mcp
-
-vibe mcp remove mistralai
-```
-
-Use `--no-login` to persist an OAuth server without starting login. Static auth
-also supports repeatable `--header`, `--api-key-header`, `--api-key-format`,
-`--startup-timeout-sec`, and `--tool-timeout-sec`. Run `vibe mcp add --help`
-for the complete command reference. `vibe mcp remove <name>` removes the server
-from the user configuration. Removing an OAuth server also deletes its stored
-tokens, client information, and configuration fingerprint when available.
-
-Hosted OAuth MCP servers can also be added from inside Vibe:
+Пустые модели advisor/reviewer включают fallback. После подключения OpenCode Go
+роли удобнее назначить через `/model`. После ручной правки используйте `/reload`.
+
+Слои конфигурации, от низкого к высокому приоритету:
+
+1. встроенные значения;
+2. удалённые эксперименты;
+3. `~/.vibe/config.toml`;
+4. доверенный `.vibe/config.toml` проекта;
+5. переменные `VIBE_*`;
+6. overrides сессии;
+7. профиль агента;
+8. административная политика.
+
+| Переменная | Назначение |
+| --- | --- |
+| `VIBE_HOME` | Перенести каталог `~/.vibe` |
+| `VIBE_ACTIVE_MODEL` | Переопределить модель |
+| `MISTRAL_API_KEY` | Ключ Mistral API |
+| `TELEGRAM_BOT_TOKEN` | Токен Telegram |
+| `VIBE_TELEGRAM_ALLOWED_CHAT_IDS` | Разрешённые chat ID |
+| `LOG_LEVEL` | Уровень журнала |
+| `LOG_MAX_BYTES` | Размер журнала до ротации |
+| `VIBE_TYPING_GRACE_PERIOD_MS` | Пауза определения ввода |
 
 ```text
-/mcp add https://mcp.linear.app/mcp
-/mcp add https://mcp.example.com/mcp --name docs --scope read --transport http --no-login
+~/.vibe/.env                 секреты и API-ключи
+~/.vibe/config.toml          конфигурация
+~/.vibe/AGENTS.md            глобальные инструкции
+~/.vibe/memory.json          долговременная память
+~/.vibe/experience.sqlite3   локальный опыт/RAG
+~/.vibe/logs/vibe.log        технический журнал
+~/.vibe/logs/session/        журналы сессий
+~/.vibe/agents/              пользовательские агенты
+~/.vibe/skills/              пользовательские skills
+.vibe/                       настройки проекта
 ```
 
-`/mcp add` is OAuth-only. It writes `auth.type = "oauth"` with optional
-scopes and starts login by default. It uses `transport = "streamable-http"`
-unless you pass `--transport http`. Pass `--no-login` to add the server without
-starting OAuth login. The shortcut supports `streamable-http` and `http`
-transports.
+## Производительность и токены
 
-```toml
-# Example MCP server configurations
-[[mcp_servers]]
-name = "my_http_server"
-transport = "http"
-url = "http://localhost:8000"
+Powerstral ускоряет работу и ограничивает контекст:
 
-[mcp_servers.auth]
-type = "static"
-headers = { "X-Client" = "vibe" }
-api_key_env = "MY_API_KEY_ENV_VAR"
-api_key_header = "Authorization"
-api_key_format = "Bearer {token}"
+- независимые чтения и проверки могут выпускаться одной пачкой;
+- tool calls исполняются параллельно, когда это безопасно;
+- связанные shell-действия объединяются в bounded-скрипт;
+- простые запросы не запускают полный advisor/reviewer pipeline;
+- результаты субагентов и инструментов ограничены по размеру;
+- дочерние runtime загружаются по необходимости;
+- Vibe Thinking отдаёт main-модели короткий synthesis;
+- fast memory сохраняет состояние вне сырого transcript;
+- experience RAG возвращает только релевантные записи;
+- compaction хранит цель, evidence и reload map;
+- повторяющийся reviewer evidence дедуплицируется.
 
-[[mcp_servers]]
-name = "my_streamable_server"
-transport = "streamable-http"
-url = "http://localhost:8001"
+Больше reasoning, поиска и субагентов означает больший расход запросов. Для
+небольших задач используйте `medium`, 0–2 субагента и `medium` web. BOOST и
+UltraCode нужны там, где дополнительная проверка оправдана.
 
-[mcp_servers.auth]
-type = "static"
-headers = { "X-Client" = "vibe" }
+Искусственных общих лимитов «15/40/90 минут» нет. Агент завершает работу после
+критериев готовности. Технические таймауты отдельных команд защищают от зависания.
 
-[[mcp_servers]]
-name = "fetch_server"
-transport = "stdio"
-command = "uvx"
-args = ["mcp-server-fetch"]
-env = { "DEBUG" = "1", "LOG_LEVEL" = "info" }
+## Разработка
+
+Используйте Python 3.12+ и только `uv`:
+
+```powershell
+uv sync --all-extras
+uv run ruff check --fix .
+uv run ruff format .
+uv run pyright
+uv run pytest
+uv run pre-commit run --all-files
 ```
 
-Supported transports:
-
-- `http`: Standard HTTP transport
-- `streamable-http`: HTTP transport with streaming support
-- `stdio`: Standard input/output transport (for local processes)
-
-Key fields:
-
-- `name`: A short alias for the server (used in tool names)
-- `transport`: The transport type
-- `url`: Base URL for HTTP transports
-- `headers`: Additional HTTP headers
-- `api_key_env`: Environment variable containing the API key
-- `command`: Command to run for stdio transport
-- `args`: Additional arguments for stdio transport
-- `startup_timeout_sec`: Timeout in seconds for the server to start and initialize (default 10s)
-- `tool_timeout_sec`: Timeout in seconds for tool execution (default 60s)
-- `env`: Environment variables to set for the MCP server of transport type stdio
-
-HTTP MCP servers can use either static auth or OAuth. Both use an `auth` block;
-legacy top-level `api_key_env` / `headers` keys are still accepted and promoted
-to static auth when Vibe loads the configuration.
-
-```toml
-[[mcp_servers]]
-name = "linear"
-transport = "streamable-http"
-url = "https://mcp.linear.app/mcp"
-
-[mcp_servers.auth]
-type = "oauth"
-scopes = []
+```powershell
+uv run vibe
+uv run vibe-acp
+uv run vibe-app-server
 ```
 
-MCP tools are named using the pattern `{server_name}_{tool_name}` and can be configured with permissions like built-in tools:
-
-```toml
-# Configure permissions for specific MCP tools
-[tools.fetch_server_get]
-permission = "always"
-
-[tools.my_http_server_query]
-permission = "ask"
+```text
+vibe/core        движок, harness, инструменты и память
+vibe/cli         Textual TUI и слеш-команды
+vibe/app_server  runtime и публичные события
+vibe/acp         Agent Client Protocol
+vibe/setup       onboarding и авторизация
+tests            тесты
+.agents/skills   инженерные правила
+docs/adr         архитектурные решения
 ```
 
-MCP server configurations support additional features:
+Перед архитектурным изменением прочитайте соответствующий ADR. После изменения
+Python-кода обязательны Ruff, форматирование, Pyright и релевантные тесты.
 
-- **Environment variables**: Set environment variables for MCP servers
-- **Custom timeouts**: Configure startup and tool execution timeouts
+## Безопасность и ограничения
 
-Example with environment variables and timeouts:
+- Powerstral не заменяет резервные копии, staging и человеческий code review.
+- `bypass_tool_permissions = true` разрешает опасные действия без диалога.
+- `auto-approve` и `autonomous` безопасны только в доверенном workspace.
+- Computer use управляет настоящим рабочим столом.
+- Chrome `evaluate` исполняет JavaScript в авторизованной странице.
+- Секреты должны находиться в хранилище или `~/.vibe/.env`.
+- Память и опыт могут устареть; факты нужно перепроверять.
+- Веб-поиск не заменяет первичную документацию и тесты.
+- Advisor и reviewer снижают риск, но не доказывают отсутствие ошибок.
+- Deploy допустим только при явном запросе, credentials и rollback.
+- Неизвестная папка остаётся недоверенной до подтверждения.
+- `codex://`-сессии читаются локально и не отправляются в публичный поиск.
 
-```toml
-[[mcp_servers]]
-name = "my_server"
-transport = "http"
-url = "http://localhost:8000"
-env = { "DEBUG" = "1", "LOG_LEVEL" = "info" }
-startup_timeout_sec = 15
-tool_timeout_sec = 120
+Сообщения об уязвимостях: [SECURITY.md](SECURITY.md).
+
+## Устранение неполадок
+
+### `top_p must be 1 when using greedy sampling`
+
+Актуальный Powerstral исправляет это автоматически при `temperature=0`:
+
+```powershell
+uv tool install --editable . --force
+vibe
 ```
 
-### Hooks
+### `402 Payment Required`
 
-Hooks wire arbitrary shell commands into Vibe's lifecycle to gate, audit, or rewrite agent behavior. No flag is required — declaring a hook is enough.
+Это ответ выбранного API endpoint. Проверьте `/whoami`, роли в `/model` и ключи
+в `/api-key`. Подписочный OAuth и обычный API имеют разные лимиты.
 
-Declared in `<project>/.vibe/hooks.toml` (project, loaded first; trusted only) and `~/.vibe/hooks.toml` (user-global, loaded second; duplicates by `name` lose to the project entry):
+### Advisor недоступен
 
-```toml
-[[hooks]]
-name = "deny-rm-rf"
-type = "pre_tool"
-match = "bash"                       # tool-name matcher (fnmatch glob + `re:` regex escape, case-insensitive)
-command = "uv run python /path/to/guard-bash"
-timeout = 60.0                       # seconds; default 60 for all hooks
-strict = false                       # tool hooks only: turn failures into denials (pre) / text-clears (post)
-description = "Reject dangerous shell commands."
+Powerstral сообщает о fallback и продолжает активной моделью. Если недоступна вся
+маршрутизация, выберите модель в `/model` и выполните `/retry`.
+
+### Telegram требует allowlist
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN = "..."
+$env:VIBE_TELEGRAM_ALLOWED_CHAT_IDS = "123456789"
 ```
 
-Subagents inherit the parent's hook config so policies apply transitively.
+### Установка заблокирована Windows
 
-#### Common ground
+Закройте процессы `vibe`, `vibe-acp`, `vibe-app-server` и повторите установку.
 
-Every hook is spawned with a JSON invocation on **stdin** (UTF-8) containing the session context: `session_id`, `parent_session_id`, `transcript_path`, `cwd`, plus `hook_event_name` discriminating the hook type. Tool hooks add tool-specific fields (below).
+### Агент запущен в домашней папке
 
-Every hook signals back via its **exit code** and **stdout**. The contract on stdout is strict: either empty (do nothing), or a JSON object matching the schema below. Use **stderr** for diagnostics / debug logs.
+Перезапустите его из нужного репозитория. Так корректно обнаруживаются `.vibe`,
+`AGENTS.md`, Git и файлы проекта.
 
-- **Exit `0`, empty stdout** — passthrough.
-- **Exit `0`, valid JSON object on stdout** — structured response. Universal top-level fields:
-  - `system_message` (string, optional) — shown to the user in the UI.
-  - `decision` (`"allow"` | `"deny"`, optional, default `"allow"`) — the effect of `"deny"` depends on the hook type.
-  - `reason` (string, optional) — accompanies `decision: "deny"`.
-  - Event-specific payload under `hook_specific_output`.
-- **Exit `0`, non-empty but non-conforming stdout** (free-form text, broken JSON, JSON scalar/array, schema mismatch) — treated as a hook failure with the parse error as the message. Warning by default; escalated to deny / clear under `strict = true` on a tool hook.
-- **Any non-zero exit / timeout / spawn failure** — same failure path. Diagnostic taken from stderr (falling back to stdout, then the exit code).
+### Журнал
 
-Unknown JSON fields are tolerated at every level (forward-compatible). Fields that aren't meaningful for the current hook type are silently ignored.
+Команда `/log` показывает путь. По умолчанию это `~/.vibe/logs/vibe.log`.
 
-#### `post_agent`
+## Происхождение
 
-Fires after every assistant turn that ends without pending tool calls.
+Powerstral основан на [Mistral Vibe 2.24.3](https://github.com/mistralai/mistral-vibe)
+и сохраняет совместимость с его конфигурацией, сессиями, MCP, ACP и CLI.
 
-- **Receives** (in addition to the session context): no extra fields.
-- **Can return**:
-  - `decision: "deny"` + `reason` — `reason` is injected as a new user message asking for a retry. Capped at **3 retries per hook per user turn**; further denies become terminal warnings.
-  - `system_message` — UI-only.
+- Powerstral: [GODIMONGO/powerstral](https://github.com/GODIMONGO/powerstral)
+- Upstream: [mistralai/mistral-vibe](https://github.com/mistralai/mistral-vibe)
+- Лицензия: [LICENSE](LICENSE)
 
-#### `pre_tool`
-
-Fires per tool call, **before** the user permission prompt. First deny short-circuits remaining `pre_tool` hooks for that call.
-
-- **Receives** (in addition to the session context): `tool_name`, `tool_call_id`, `tool_input` (the model's raw arguments).
-- **Can return**:
-  - `decision: "deny"` + `reason` — denies the tool call; `reason` becomes the tool error the LLM sees.
-  - `hook_specific_output.tool_input` (object) — **full replacement** of the model's arguments. Re-validated against the tool's schema (validation failure → synthesized denial). Rewrites compose left-to-right across hooks. The rewritten arguments are also what the permission prompt displays, what the tool runs with, and what subsequent LLM turns see on the assistant message.
-  - `system_message` — UI-only.
-
-#### `post_tool`
-
-Fires per tool call **if and only if the tool body actually ran**. `tool_status` is `success`, `failure`, or `cancelled` (cancellation during the tool body — cancellation is shielded so audit hooks still run). Does not fire when the tool never executed: `pre_tool` denial, user denial at the approval prompt, permission `NEVER`, or cancellation before the body started.
-
-- **Receives** (in addition to the session context): `tool_name`, `tool_call_id`, `tool_input` (post-rewrite), `tool_status`, `tool_output` (structured result dict; null on failure), `tool_output_text` (the running text the LLM will see, mutable by prior hooks), `tool_error`, `duration_ms`.
-- **Can return**:
-  - `decision: "deny"` + `reason` — replaces `tool_output_text` with `reason`. Pipeline continues; subsequent hooks see the replacement.
-  - `hook_specific_output.additional_context` (string) — **appended** (with a `\n` separator) to `tool_output_text`. Composes with a same-hook deny: deny replaces first, then `additional_context` is appended to the replacement.
-  - `system_message` — UI-only.
-
-### Session Management
-
-#### Session Continuation and Resumption
-
-Vibe supports continuing from previous sessions:
-
-- **`--continue`** or **`-c`**: Continue from the most recent saved session
-- **`--resume`**: Open an interactive session picker
-- **`--resume SESSION_ID`**: Resume a specific session by ID (supports partial matching)
-- **`/resume`** or **`/continue`**: Open the session picker from inside Vibe; press `D` twice to delete a local saved session. The active session cannot be deleted from this picker.
-
-```bash
-# Continue from last session
-vibe --continue
-
-# Open session picker
-vibe --resume
-
-# Resume specific session
-vibe --resume abc123
-```
-
-Session logging must be enabled in your configuration for these features to work.
-
-#### Working Directory Control
-
-Use the `--workdir` option to specify a working directory:
-
-```bash
-vibe --workdir /path/to/project
-```
-
-This is useful when you want to run Vibe from a different location than your current directory.
-
-Use `--add-dir` (repeatable) to make additional directories available to the agent for the duration of the session:
-
-```bash
-vibe --add-dir /path/to/other-project --add-dir /path/to/library
-```
-
-Each path is implicitly trusted (no trust prompt) and contributes its `AGENTS.md` and `.vibe/` configuration (tools, skills, agents, prompts, hooks) to the session. File-tool permissions treat each `--add-dir` path the same way as your primary working directory — reads and writes inside them don't require the "outside workdir" prompt. Nested paths collapse: passing `/repo` and `/repo/sub` is equivalent to passing just `/repo`.
-
-Use `--worktree NAME` to create (or reuse) a [git worktree](https://git-scm.com/docs/git-worktree) and run inside it:
-
-```bash
-vibe --worktree my-feature
-```
-
-The worktree lives under `$VIBE_HOME/worktrees/<repo-name>-<repo-hash>/NAME` and is checked out on a branch named `NAME` (created if it doesn't exist, attached if it does). Vibe `cd`s into it before the session starts and trusts it for the session (no trust prompt). If you start Vibe from a subdirectory, Vibe enters the matching subdirectory inside the worktree.
-
-Existing worktrees are reused only when they belong to the same git repository and are checked out on branch `NAME`; otherwise Vibe exits with an error instead of running in the wrong checkout.
-
-Pass `--worktree` with no name to have Vibe name one for you:
-
-```bash
-vibe "Fix the login bug" --worktree     # -> fix-the-login-bug, on vibe/fix-the-login-bug
-vibe --worktree                         # no prompt -> a random slug, e.g. brave-quiet-otter
-```
-
-The name comes from your prompt, shortened to whole words. Without a prompt — or when the prompt has nothing usable in it, such as emoji only — Vibe generates a random slug instead. Unlike the named form, this never reuses an existing worktree: Vibe claims a free name, adding `-2`, `-3` and so on if needed, so two sessions started at once can never land in the same checkout. The branch is always `vibe/<name>`, matching the worktrees Le Chat Desktop creates.
-
-Order matters, because `--worktree` takes an optional value: `vibe --worktree "Fix the login bug"` reads the prompt as the *name*. Put the prompt first, or separate it with `--`:
-
-```bash
-vibe --worktree -- "Fix the login bug"
-```
-
-Automatic cleanup only applies to worktrees Vibe created this run, and only after a session actually started — a startup failure (bad config, `--continue` with no sessions) never deletes anything, and a reused worktree is always left in place. When an interactive session exits, Vibe removes the worktree directory automatically if there are no uncommitted changes, untracked files, or commits beyond the commit where the worktree session started. If any of those exist, Vibe asks whether to keep or remove the worktree. When Vibe created the branch it is deleted alongside the worktree; a branch that already existed and was merely attached is kept unless you confirm its deletion. Keeping preserves the directory and branch so you can return later; removing force-deletes them, discarding changes, untracked files, and commits. Programmatic runs (`vibe -p ... --worktree NAME`) do not clean up automatically because there is no exit prompt; remove them manually with `git worktree remove`. `--worktree` is ignored with `--setup` and `--check-upgrade`.
-
-Sessions are scoped per directory, so `-c`/`--continue` and the `--resume` picker only see sessions started inside that worktree. To carry a session across worktrees, resume it explicitly by ID with `--resume <ID>`.
-
-#### Worktree ownership
-
-Whichever way a worktree is created, Vibe writes an ownership record beside it under `$VIBE_HOME/worktrees/.claims/<repo-name>-<repo-hash>/<name>/`, recording the branch, the commit the session started from, and whether Vibe created the branch. Nothing is ever removed without one: a worktree you made yourself, or one whose record is missing or unreadable, is left alone.
-
-The record directory also holds a marker per session currently working in the worktree. Sessions from different clients run in separate processes with nothing shared between them, so a marker is the only evidence that someone else is still in there. A worktree with any marker left is kept. A process killed outright leaves its marker behind and the worktree survives, which is the direction worth failing in.
-
-The app-server never removes a worktree on its own. Closing a session does not count: the desktop app releases an idle session's process a second after each turn to reclaim it, and the session stays live and resumable, so its worktree outlives that. A worktree that exists is removed in exactly one situation — **you delete its session**. It still has to be one Vibe created, held by nobody else, and free of uncommitted changes, untracked files, and commits made since the session began; anything else is kept and logged.
-
-Two things are cleaned up without asking, neither of which is a worktree you could have worked in. A session whose very first turn never completed has its worktree rolled back, because such a session is never published and leaves no session file — there is nothing to return to. And a reservation that never became a worktree, an empty directory left by a claim whose `git worktree add` did not land, is discarded the next time a session starts in that repo.
-
-The cost of that conservatism is that a worktree whose app-server was killed outright stays on disk, holding a marker for a session that no longer exists. Removing it is a judgement about whether you are finished with the work, which only you can make.
-
-### Update Settings
-
-Vibe checks PyPI at most once per day during a session. When a newer version is found, the next launch shows an update prompt before opening the chat, offering to either update immediately (via `uv tool upgrade mistral-vibe` or `brew upgrade mistral-vibe`) or continue with the current version.
-
-Run `vibe --check-upgrade` to check PyPI immediately, prompt to install a newer version if one exists, and exit.
-
-To disable the daily check entirely, add this to your `config.toml`:
-
-```toml
-enable_update_checks = false
-```
-
-### Notification Settings
-
-Vibe can notify you when the agent needs your attention (awaiting approval, asking a question, or task complete). This is useful when you switch to another window while the agent works.
-
-To disable notifications:
-
-```toml
-enable_notifications = false
-```
-
-### Custom Vibe Home Directory
-
-By default, Vibe stores its configuration in `~/.vibe/`. You can override this by setting the `VIBE_HOME` environment variable:
-
-```bash
-export VIBE_HOME="/path/to/custom/vibe/home"
-```
-
-This affects where Vibe looks for:
-
-- `config.toml` - Main configuration
-- `.env` - API keys
-- `connector_bootstrap_cache.json` - Short-lived connector discovery cache
-- `agents/` - Custom agent configurations
-- `prompts/` - Custom system and compaction prompts
-- `tools/` - Custom tools
-- `logs/` - Session logs
-
-Custom tools will be deprecated in a future release. Prefer skills for new
-extensions; Vibe can help migrate existing custom tools to skills.
-
-### Logging
-
-Vibe writes structured logs to `~/.vibe/logs/vibe.log`. Use `/log-level` to open an interactive picker that lets you set the session override and/or persist a level to `config.toml`. You can also set `log_level` directly in `config.toml` or via the `/config` screen.
-
-Valid levels: `DEBUG`, `INFO`, `WARNING` (default), `ERROR`, `CRITICAL`.
-
-Precedence: session override > `LOG_LEVEL` env var > `log_level` in config.toml > default.
-
-The `LOG_LEVEL` environment variable overrides the config value at startup. Use `DEBUG_MODE=true` to force `DEBUG` at startup (also enables `debugpy` under `vibe-acp`).
-
-## Editors/IDEs
-
-Mistral Vibe can be used in text editors and IDEs that support [Agent Client Protocol](https://agentclientprotocol.com/overview/clients). See the [ACP Setup documentation](docs/acp-setup.md) for setup instructions for various editors and IDEs.
-
-## Resources
-
-- [CHANGELOG](CHANGELOG.md) - See what's new in each version
-- [CONTRIBUTING](CONTRIBUTING.md) - Guidelines for feature requests, feedback and bug reports
-
-## Data collection & usage
-
-Use of Vibe is subject to our [Privacy Policy](https://legal.mistral.ai/terms/privacy-policy) and may include the collection and processing of data related to your use of the service, such as usage data, to operate, maintain, and improve Vibe. You can disable telemetry and crash reporting in your `config.toml` by setting `enable_telemetry = false`.
-
-
-## License
-
-Copyright 2025 Mistral AI
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the [LICENSE](LICENSE) file for the full license text.
+Powerstral развивается как практический автономный harness: за счёт планирования,
+разделения ролей, управляемых инструментов, локальной памяти и обязательной
+проверки результата, а не за счёт обещания «превратить» одну модель в другую.

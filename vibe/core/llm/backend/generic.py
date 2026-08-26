@@ -136,6 +136,7 @@ class OpenAIAdapter(APIAdapter):
             max_tokens=max_tokens,
             tool_choice=tool_choice,
             thinking=thinking,
+            supports_reasoning_effort=provider.supports_reasoning_effort,
         )
 
         stream_options: dict[str, Any] = {"include_usage": True}
@@ -148,6 +149,7 @@ class OpenAIAdapter(APIAdapter):
             stream_options=stream_options,
             api_key=api_key,
             endpoint=self.endpoint,
+            supports_stream_options=provider.supports_stream_options,
         )
 
     def _parse_message(
@@ -157,24 +159,45 @@ class OpenAIAdapter(APIAdapter):
             choice = data["choices"][0]
             if "message" in choice:
                 msg_dict = self._reasoning_from_api(choice["message"], field_name)
+                self._normalize_tool_call_types(msg_dict)
                 return LLMMessage.model_validate(msg_dict)
             if "delta" in choice:
                 msg_dict = self._reasoning_from_api(choice["delta"], field_name)
                 if msg_dict.get("role") is None:
                     msg_dict["role"] = Role.assistant
+                self._normalize_tool_call_types(msg_dict)
                 return LLMMessage.model_validate(msg_dict)
             raise ValueError("Invalid response data: missing message or delta")
 
         if "message" in data:
             msg_dict = self._reasoning_from_api(data["message"], field_name)
+            self._normalize_tool_call_types(msg_dict)
             return LLMMessage.model_validate(msg_dict)
         if "delta" in data:
             msg_dict = self._reasoning_from_api(data["delta"], field_name)
             if msg_dict.get("role") is None:
                 msg_dict["role"] = Role.assistant
+            self._normalize_tool_call_types(msg_dict)
             return LLMMessage.model_validate(msg_dict)
 
         return None
+
+    @staticmethod
+    def _normalize_tool_call_types(message: dict[str, Any]) -> None:
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            call_type = tool_call.get("type")
+            if call_type is None:
+                tool_call["type"] = "function"
+            elif call_type != "function":
+                raise ValueError(
+                    "Unsupported provider tool call type "
+                    f"{call_type!r}; expected 'function'"
+                )
 
     def parse_response(
         self, data: dict[str, Any], provider: ProviderConfig
@@ -245,6 +268,7 @@ class GenericBackend:
         client: VibeAsyncHTTPClient | None = None,
         provider: ProviderConfig,
         timeout: float = 720.0,
+        retry_max_elapsed_time: float = 300.0,
         on_retry: RetryObserver | None = None,
         enable_otel: bool = False,
     ) -> None:
@@ -258,9 +282,12 @@ class GenericBackend:
         self._owns_client = client is None
         self._provider = provider
         self._timeout = timeout
-        self._make_request = async_retry(tries=3, on_retry=on_retry)(self._send_request)
+        self._retry_max_elapsed_time = retry_max_elapsed_time
+        self._make_request = async_retry(
+            tries=3, on_retry=on_retry, max_elapsed_seconds=retry_max_elapsed_time
+        )(self._send_request)
         self._make_streaming_request = async_generator_retry(
-            tries=3, on_retry=on_retry
+            tries=3, on_retry=on_retry, max_elapsed_seconds=retry_max_elapsed_time
         )(self._send_streaming_request)
         self._enable_otel = enable_otel
 
@@ -395,6 +422,18 @@ class GenericBackend:
         extra_headers: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
+        if not self._provider.enable_streaming:
+            yield await self.complete(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                tools=tools,
+                max_tokens=max_tokens,
+                tool_choice=tool_choice,
+                extra_headers=extra_headers,
+                metadata=metadata,
+            )
+            return
         api_key = resolve_api_key(self._provider.api_key_env_var)
 
         api_style = getattr(self._provider, "api_style", "openai")
@@ -560,15 +599,17 @@ class GenericBackend:
                 if line.startswith(":"):
                     continue
 
-                DELIM_CHAR = ":"
-                if f"{DELIM_CHAR} " not in line:
+                delim_char = ":"
+                if delim_char not in line:
                     raise ValueError(
                         f"Stream chunk improperly formatted. "
-                        f"Expected `key{DELIM_CHAR} value`."
+                        f"Expected `key{delim_char} value`."
                     )
-                delim_index = line.find(DELIM_CHAR)
+                delim_index = line.find(delim_char)
                 key = line[0:delim_index]
-                value = line[delim_index + 2 :]
+                value = line[delim_index + 1 :]
+                if value.startswith(" "):
+                    value = value[1:]
 
                 if key != "data":
                     # This might be the case with openrouter, so we just ignore it

@@ -53,6 +53,7 @@ from vibe.core.config.models import (
     normalize_model_configs,
     serialize_model_configs,
 )
+from vibe.core.config.opencode_go import OPENCODE_GO_MODELS, OPENCODE_GO_PROVIDERS
 from vibe.core.config.schema import (
     ConfigSchema,
     WithConcatMerge,
@@ -111,6 +112,7 @@ DEFAULT_PROVIDERS = [
         api_base="http://127.0.0.1:8080/v1",
         api_key_env_var="",  # NOTE: if you wish to use --api-key in llama-server, change this value
     ),
+    *OPENCODE_GO_PROVIDERS,
 ]
 
 DEFAULT_ACTIVE_MODEL_CONFIG = ModelConfig(
@@ -145,6 +147,7 @@ DEFAULT_MODELS = [
         input_price=0.0,
         output_price=0.0,
     ),
+    *OPENCODE_GO_MODELS,
 ]
 
 # Sentinel ``active_model`` value meaning "not pinned": the config resolves it to

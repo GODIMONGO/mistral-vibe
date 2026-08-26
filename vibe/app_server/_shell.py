@@ -20,7 +20,8 @@ from vibe.app_server.models import (
 from vibe.app_server.protocol import ShellRunParams, ShellRunResponse
 from vibe.core.types import ManualShellContext
 from vibe.core.utils import kill_async_subprocess
-from vibe.core.utils.shell import spawn_shell_command
+from vibe.core.utils.shell import spawn_shell_command, uses_posix_shell
+from vibe.utils.io import windows_console_encoding
 
 type ShellOutputObserver = Callable[[str], Awaitable[None]]
 
@@ -146,14 +147,21 @@ class ShellController:
         timed_out = False
         interrupted = False
         try:
+            output_encoding = (
+                "utf-8" if uses_posix_shell() else windows_console_encoding()
+            )
             process = await spawn_shell_command(params.command, cwd=cwd)
             self._processes[params.operation_id] = process
             readers = [
                 asyncio.create_task(
-                    self._read_stream(process.stdout, stdout, observe_output)
+                    self._read_stream(
+                        process.stdout, stdout, observe_output, encoding=output_encoding
+                    )
                 ),
                 asyncio.create_task(
-                    self._read_stream(process.stderr, stderr, observe_output)
+                    self._read_stream(
+                        process.stderr, stderr, observe_output, encoding=output_encoding
+                    )
                 ),
             ]
             if params.operation_id in self._interrupted:
@@ -212,10 +220,12 @@ class ShellController:
         stream: asyncio.StreamReader | None,
         parts: list[str],
         observe_output: ShellOutputObserver | None,
+        *,
+        encoding: str,
     ) -> None:
         if stream is None:
             return
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
         while chunk := await stream.read(4096):
             text = decoder.decode(chunk)
             if text:

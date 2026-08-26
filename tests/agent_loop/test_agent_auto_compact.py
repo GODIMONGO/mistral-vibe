@@ -54,6 +54,27 @@ def _ctx_too_long_error() -> BackendError:
     )
 
 
+def _large_payload_transport_error(*, approx_chars: int = 213_585) -> BackendError:
+    return BackendError(
+        provider="mistral",
+        endpoint="/chat/completions",
+        status=None,
+        reason="Server disconnected without sending a response.",
+        headers={},
+        body_text="",
+        parsed_error="Network error",
+        model="test",
+        payload_summary=PayloadSummary(
+            model="test",
+            message_count=107,
+            approx_chars=approx_chars,
+            temperature=0.0,
+            has_tools=True,
+            tool_choice=None,
+        ),
+    )
+
+
 def _tool_call_chunk() -> LLMChunk:
     return mock_llm_chunk(
         content="",
@@ -410,6 +431,16 @@ async def test_compact_without_extra_instructions_has_no_additional_section() ->
     assert "## Additional Instructions" not in compaction_prompt
 
 
+def test_default_compaction_prompt_profiles_a_minimal_working_set() -> None:
+    prompt = UtilityPrompt.COMPACT.read()
+
+    assert "context profiler" in prompt
+    assert "CURRENT OBJECTIVE" in prompt
+    assert "VERIFIED EVIDENCE" in prompt
+    assert "RELOAD MAP" in prompt
+    assert "stale tool output" in prompt
+
+
 @pytest.mark.asyncio
 async def test_compact_raises_on_tool_call_when_flag_enabled(
     telemetry_events: list[dict],
@@ -665,6 +696,47 @@ async def test_reactive_compaction_recovers_from_overflow() -> None:
     # The compaction summary is a utility call; the retried turn is the main one.
     call_types = [(m or {}).get("call_type") for m in backend.requests_metadata]
     assert call_types == ["secondary_call", "main_call"]
+
+
+@pytest.mark.asyncio
+async def test_reactive_compaction_recovers_large_payload_disconnect() -> None:
+    backend = _ScriptedBackend(
+        [
+            [mock_llm_chunk(content="<summary>deploy state</summary>")],
+            [mock_llm_chunk(content="<final>continued</final>")],
+        ],
+        raises_at={0: _large_payload_transport_error()},
+    )
+    cfg = build_test_vibe_config(models=make_test_models(auto_compact_threshold=999))
+    agent = build_test_agent_loop(config=cfg, backend=backend)
+    agent.stats.context_tokens = 0
+
+    events = [event async for event in agent.act("Continue deployment")]
+
+    assert any(isinstance(event, CompactStartEvent) for event in events)
+    assert any(isinstance(event, CompactEndEvent) for event in events)
+    assert any(
+        isinstance(event, AssistantEvent)
+        and event.content == "<final>continued</final>"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_small_payload_disconnect_does_not_trigger_compaction() -> None:
+    backend = _ScriptedBackend(
+        [], raises_at={0: _large_payload_transport_error(approx_chars=20_000)}
+    )
+    cfg = build_test_vibe_config(models=make_test_models(auto_compact_threshold=999))
+    agent = build_test_agent_loop(config=cfg, backend=backend)
+    agent.stats.context_tokens = 0
+    events = []
+
+    with pytest.raises(RuntimeError, match="Server disconnected"):
+        async for event in agent.act("Hello"):
+            events.append(event)
+
+    assert not any(isinstance(event, CompactStartEvent) for event in events)
 
 
 @pytest.mark.asyncio

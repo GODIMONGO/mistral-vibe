@@ -8,7 +8,10 @@ import pytest
 @pytest.fixture(autouse=True)
 def _pin_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TZ", "UTC")
-    time.tzset()
+    # ``tzset`` is POSIX-only. Snapshot tests must still run on Windows; the
+    # fixtures themselves do not render local wall-clock values there.
+    if tzset := getattr(time, "tzset", None):
+        tzset()
 
 
 @pytest.fixture(autouse=True)

@@ -10,7 +10,14 @@ import pytest
 
 from tests.conftest import build_test_vibe_config
 from vibe.core.agents.models import AgentProfile, AgentSafety
-from vibe.core.config import SessionLoggingConfig, VibeConfigSchema
+from vibe.core.config import (
+    MCPHttp,
+    MCPStaticAuth,
+    MCPStdio,
+    ProviderConfig,
+    SessionLoggingConfig,
+    VibeConfigSchema,
+)
 from vibe.core.experiments.models import EvalResponse
 from vibe.core.loop import ScheduledLoop
 from vibe.core.session.session_loader import SessionLoader
@@ -354,7 +361,7 @@ class TestSessionLoggerSaveInteraction:
         assert messages_file.exists()
         assert metadata_file.exists()
 
-        with open(metadata_file) as f:
+        with open(metadata_file, encoding="utf-8") as f:
             metadata = json.load(f)
             assert metadata["session_id"] == session_id
             assert metadata["total_messages"] == 2
@@ -363,6 +370,62 @@ class TestSessionLoggerSaveInteraction:
             assert metadata["title"] == "Hello"
             assert metadata["title_source"] == "auto"
             assert "system_prompt" in metadata
+
+    @pytest.mark.asyncio
+    async def test_save_interaction_redacts_config_credentials(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+    ) -> None:
+        provider_secret = "sentinel-provider-header-secret"
+        mcp_header_secret = "sentinel-mcp-header-secret"
+        mcp_env_secret = "sentinel-mcp-env-secret"
+        config = build_test_vibe_config(
+            providers=[
+                ProviderConfig(
+                    name="private-provider",
+                    api_base="https://provider.example/v1",
+                    api_key_env_var="PRIVATE_PROVIDER_API_KEY",
+                    extra_headers={"X-Private-Header": provider_secret},
+                )
+            ],
+            mcp_servers=[
+                MCPHttp(
+                    name="private-http",
+                    transport="http",
+                    url="https://mcp.example",
+                    auth=MCPStaticAuth(
+                        headers={"X-Custom-Auth": mcp_header_secret},
+                        api_key_env="PRIVATE_MCP_API_KEY",
+                    ),
+                ),
+                MCPStdio(
+                    name="private-stdio",
+                    transport="stdio",
+                    command="mcp-server",
+                    env={"PRIVATE_MCP_PASSWORD": mcp_env_secret},
+                ),
+            ],
+        )
+        logger = SessionLogger(session_config, "credential-safe-session")
+
+        await logger.save_interaction(
+            messages=[LLMMessage(role=Role.user, content="Keep secrets private")],
+            stats=AgentStats(),
+            config=config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+
+        assert logger.session_dir is not None
+        raw_metadata = (logger.session_dir / "meta.json").read_text(encoding="utf-8")
+        assert provider_secret not in raw_metadata
+        assert mcp_header_secret not in raw_metadata
+        assert mcp_env_secret not in raw_metadata
+        assert "PRIVATE_PROVIDER_API_KEY" in raw_metadata
+        assert "PRIVATE_MCP_API_KEY" in raw_metadata
+        assert "[redacted]" in raw_metadata
 
     @pytest.mark.asyncio
     async def test_save_interaction_system_prompt_in_metadata(
@@ -412,6 +475,89 @@ class TestSessionLoggerSaveInteraction:
             assert len(messages_data) == 2
             assert messages_data[0]["role"] == "user"
             assert messages_data[1]["role"] == "assistant"
+
+    @pytest.mark.asyncio
+    async def test_save_interaction_persists_private_fast_working_memory(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfigSchema,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+    ) -> None:
+        from vibe.core.memory import build_working_memory_message
+
+        logger = SessionLogger(session_config, "working-memory-session")
+        messages = [
+            LLMMessage(role=Role.system, content="System prompt"),
+            LLMMessage(role=Role.user, content="Run tests"),
+            LLMMessage(role=Role.assistant, content="Running them."),
+        ]
+        messages.append(
+            build_working_memory_message(
+                messages,
+                tool="bash",
+                action="uv run pytest",
+                status="success",
+                result="57 passed",
+            )
+        )
+
+        await logger.save_interaction(
+            messages,
+            AgentStats(),
+            mock_vibe_config,
+            mock_tool_manager,
+            mock_agent_profile,
+        )
+
+        assert logger.session_dir is not None
+        metadata = json.loads((logger.session_dir / "meta.json").read_text())
+        assert metadata["working_memory"]["role"] == "system"
+        assert "57 passed" not in metadata["working_memory"]["content"]
+        assert "output_sha256=" in metadata["working_memory"]["content"]
+        persisted = (logger.session_dir / "messages.jsonl").read_text()
+        assert "Fast Working Memory" not in persisted
+
+    @pytest.mark.asyncio
+    async def test_save_interaction_redacts_agent_profile_override_secrets(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfigSchema,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+    ) -> None:
+        profile = AgentProfile(
+            name="secret-profile",
+            display_name="Secret profile",
+            description="test",
+            safety=mock_agent_profile.safety,
+            overrides={
+                "providers": {
+                    "private": {"extra_headers": {"Authorization": "Bearer sentinel"}}
+                },
+                "tools": {"remote": {"env": {"SECRET": "sentinel-env"}}},
+                "token": "sentinel-token",
+            },
+        )
+        logger = SessionLogger(session_config, "profile-redaction-session")
+
+        await logger.save_interaction(
+            [LLMMessage(role=Role.user, content="Hello")],
+            AgentStats(),
+            mock_vibe_config,
+            mock_tool_manager,
+            profile,
+        )
+
+        assert logger.session_dir is not None
+        persisted = (logger.session_dir / "meta.json").read_text(encoding="utf-8")
+        assert "sentinel" not in persisted
+        metadata = json.loads(persisted)
+        overrides = metadata["agent_profile"]["overrides"]
+        assert overrides["token"] == "[redacted]"
+        assert overrides["providers"]["private"]["extra_headers"] == {
+            "Authorization": "[redacted]"
+        }
 
     @pytest.mark.asyncio
     async def test_save_interaction_with_existing_messages(
@@ -618,7 +764,7 @@ class TestSessionLoggerSaveInteraction:
         assert logger.session_dir is not None
         metadata_file = logger.session_dir / "meta.json"
         assert metadata_file.exists()
-        with open(metadata_file) as f:
+        with open(metadata_file, encoding="utf-8") as f:
             metadata = json.load(f)
             assert metadata["session_id"] == session_id
             assert metadata["total_messages"] == 2

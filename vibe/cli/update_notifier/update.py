@@ -163,7 +163,11 @@ async def get_update_if_available(
     return UpdateAvailability(latest_version=update.latest_version, should_notify=True)
 
 
-UPDATE_COMMANDS = ["uv tool upgrade mistral-vibe", "brew upgrade mistral-vibe"]
+# Powerstral keeps the upstream distribution name for compatibility. Running
+# an upstream package-manager upgrade would replace the fork, so no command is
+# trusted by default. Tests and downstream packagers may inject an explicit
+# immutable update command list.
+UPDATE_COMMANDS: list[str] = []
 
 
 async def do_update() -> bool:

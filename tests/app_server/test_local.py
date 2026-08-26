@@ -547,7 +547,9 @@ async def test_session_start_rejects_existing_selection_outside_linked_worktrees
                 client_info=ClientInfo(name="unlinked-worktree-client", version="1"),
                 capabilities=ClientCapabilities(),
                 session_options=SessionOptions(
-                    cwd=str(tmp_path), worktree=ExistingWorktreeInput(cwd=str(unlinked))
+                    cwd=str(tmp_path),
+                    worktree=ExistingWorktreeInput(cwd=str(unlinked)),
+                    trust_workspace=True,
                 ),
             )
     finally:
@@ -620,7 +622,7 @@ async def _open_local_session(
         client,
         client_info=ClientInfo(name=name, version="1"),
         capabilities=ClientCapabilities(),
-        session_options=session_options,
+        session_options=session_options.model_copy(update={"trust_workspace": True}),
     )
     return session, client
 
@@ -701,7 +703,9 @@ async def test_a_dropped_notification_still_retires_the_entry(
         client_info=ClientInfo(name="dropped-client", version="1"),
         capabilities=ClientCapabilities(),
         session_options=SessionOptions(
-            cwd=str(tmp_path), worktree=AutoWorktreeInput(prompt="fix the login bug")
+            cwd=str(tmp_path),
+            worktree=AutoWorktreeInput(prompt="fix the login bug"),
+            trust_workspace=True,
         ),
     )
     try:
@@ -753,7 +757,9 @@ async def test_a_dropped_notification_still_survives_a_resume(
         client_info=ClientInfo(name="dropped-resume-client", version="1"),
         capabilities=ClientCapabilities(),
         session_options=SessionOptions(
-            cwd=str(tmp_path), worktree=AutoWorktreeInput(prompt="fix the login bug")
+            cwd=str(tmp_path),
+            worktree=AutoWorktreeInput(prompt="fix the login bug"),
+            trust_workspace=True,
         ),
     )
     try:
@@ -807,7 +813,9 @@ async def test_the_worktree_entry_survives_a_resume(tmp_path: Path) -> None:
         client_info=ClientInfo(name="resume-client", version="1"),
         capabilities=ClientCapabilities(),
         session_options=SessionOptions(
-            cwd=str(tmp_path), worktree=AutoWorktreeInput(prompt="fix the login bug")
+            cwd=str(tmp_path),
+            worktree=AutoWorktreeInput(prompt="fix the login bug"),
+            trust_workspace=True,
         ),
     )
     try:
@@ -946,7 +954,9 @@ async def test_session_stop_releases_the_holder_before_shutting_down(
         client_info=ClientInfo(name="idle-client", version="1"),
         capabilities=ClientCapabilities(),
         session_options=SessionOptions(
-            cwd=str(tmp_path), worktree=AutoWorktreeInput(prompt="fix the login bug")
+            cwd=str(tmp_path),
+            worktree=AutoWorktreeInput(prompt="fix the login bug"),
+            trust_workspace=True,
         ),
     )
     loops[0].session_logger._persisted = True
@@ -994,7 +1004,9 @@ async def test_a_failed_holder_release_still_shuts_the_session_down(
         client_info=ClientInfo(name="idle-client", version="1"),
         capabilities=ClientCapabilities(),
         session_options=SessionOptions(
-            cwd=str(tmp_path), worktree=AutoWorktreeInput(prompt="fix the login bug")
+            cwd=str(tmp_path),
+            worktree=AutoWorktreeInput(prompt="fix the login bug"),
+            trust_workspace=True,
         ),
     )
 
@@ -1030,7 +1042,9 @@ async def test_session_stop_keeps_the_worktree_of_a_session_that_ran_a_turn(
         client_info=ClientInfo(name="idle-client", version="1"),
         capabilities=ClientCapabilities(),
         session_options=SessionOptions(
-            cwd=str(tmp_path), worktree=AutoWorktreeInput(prompt="fix the login bug")
+            cwd=str(tmp_path),
+            worktree=AutoWorktreeInput(prompt="fix the login bug"),
+            trust_workspace=True,
         ),
     )
     worktree_root = Path(session.cwd)
@@ -1215,6 +1229,7 @@ async def test_session_start_cleans_created_worktree_when_runtime_open_fails(
                     worktree=NewWorktreeInput(
                         branch="feat/startup-fails", name="startup-fails"
                     ),
+                    trust_workspace=True,
                 ),
             )
     finally:
@@ -1272,6 +1287,7 @@ async def test_session_start_cleans_created_worktree_when_cancelled_mid_resoluti
                     worktree=NewWorktreeInput(
                         branch="feat/cancelled", name="cancelled"
                     ),
+                    trust_workspace=True,
                 )
             ),
             None,
@@ -1286,6 +1302,46 @@ async def test_session_start_cleans_created_worktree_when_cancelled_mid_resoluti
 
     assert _linked(tmp_path) == ()
     assert "feat/cancelled" not in [head.name for head in repo.heads]
+
+
+@pytest.mark.asyncio
+async def test_untrusted_worktree_is_rejected_before_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+
+    async def open_root(request: runtime.RootOpenRequest) -> AgentLoop:
+        raise AssertionError("runtime must not open for an untrusted worktree")
+
+    controller = LegacySessionRuntimeController(
+        open_root=open_root,
+        runtime_factory=runtime.AgentRuntimeFactory(),
+        host_handler=HostRequestHandler(HarnessFilesManager(sources=())),
+        stage_root=None,
+        services=_FakeSessionBackendServices(),
+    )
+    resolve_calls = 0
+
+    async def track_resolve(_options: SessionOptions) -> Any:
+        nonlocal resolve_calls
+        resolve_calls += 1
+        raise AssertionError("worktree resolution must not run before trust")
+
+    monkeypatch.setattr(controller, "_resolve_worktree", track_resolve)
+
+    with pytest.raises(RequestFailure) as exc_info:
+        await controller._open_runtime(
+            SessionStartParams(
+                agent_config=SessionOptions(
+                    cwd=str(tmp_path), worktree=AutoWorktreeInput(prompt="unsafe")
+                )
+            ),
+            None,
+        )
+
+    assert exc_info.value.code is ProtocolErrorCode.INVALID_PARAMS
+    assert "before the source workspace is trusted" in str(exc_info.value)
+    assert resolve_calls == 0
 
 
 @pytest.mark.asyncio

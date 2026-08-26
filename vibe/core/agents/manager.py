@@ -108,6 +108,7 @@ class AgentManager:
         role_model = self._role_model_alias(profile, base_config)
         if role_model:
             overrides["active_model"] = role_model
+            overrides["models"] = {role_model: {"thinking": "max"}}
         return overrides
 
     def _config_without_active_profile(self) -> VibeConfigSchema:

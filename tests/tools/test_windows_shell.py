@@ -12,7 +12,7 @@ from typing import cast
 import pytest
 
 from tests.mock.utils import collect_result
-from vibe.core.tools.base import BaseToolState, InvokeContext, ToolPermission
+from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError, ToolPermission
 from vibe.core.tools.builtins import (
     bash as bash_module,
     experimental_bash as experimental_bash_module,
@@ -1490,6 +1490,29 @@ async def test_windows_shell_managed_echo_hello(native_windows_platform):
     assert result.session_id.startswith("powershell_")
     assert "bash" not in result.session_id
     assert "bash" not in result.output_path.lower()
+
+
+@pytest.mark.asyncio
+@windows_only
+async def test_windows_shell_default_timeout_kills_hung_process(
+    native_windows_platform,
+):
+    assert windows_managed_shell_supported()
+    terminal_runtime = TerminalRuntime()
+    tool = _managed_tool(terminal_runtime)
+
+    with pytest.raises(ToolError, match="Command timed out after 0.2s"):
+        await collect_result(
+            tool.run(
+                ExperimentalBashArgs(
+                    command="Start-Sleep -Seconds 30", timeout_seconds=0.2
+                )
+            )
+        )
+
+    sessions = tool._session_manager().list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0].status == "timed_out"
 
 
 @pytest.mark.asyncio

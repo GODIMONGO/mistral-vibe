@@ -47,7 +47,20 @@ class StructuredLogFormatter(logging.Formatter):
 
 
 class _VibeFileHandler(RotatingFileHandler):
-    pass
+    """Size-bounded handler that rotates without renaming an open Windows file.
+
+    Vibe can have more than one process holding ``vibe.log``. Renaming the live
+    file is not reliable on Windows, so reaching the cap truncates the shared
+    file in place before writing the next complete record. ``LogReader`` already
+    detects a decreasing size and restarts from byte zero.
+    """
+
+    def doRollover(self) -> None:
+        if self.stream is None:
+            self.stream = self._open()
+        self.stream.seek(0)
+        self.stream.truncate(0)
+        self.stream.flush()
 
 
 def init_file_logging(

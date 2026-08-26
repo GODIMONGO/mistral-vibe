@@ -457,7 +457,10 @@ class WindowsComputerBackend:
 
         _, _, win32gui, _ = _win32_modules()
         self._foreground_window(win32gui)
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        win_dll = getattr(ctypes, "WinDLL", None)
+        if win_dll is None:
+            raise ToolError("Windows input APIs are unavailable on this platform")
+        user32 = win_dll("user32", use_last_error=True)
         ulong_ptr = getattr(wintypes, "ULONG_PTR", wintypes.WPARAM)
 
         class KeyInput(ctypes.Structure):

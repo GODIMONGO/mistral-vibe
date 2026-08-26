@@ -176,7 +176,7 @@ async def test_ui_displays_compaction_checkpoint_when_resuming_session(
             "After compaction"
         ]
         assert [message.get_content() for message in app.query(CompactMessage)] == [
-            "Compaction completed."
+            "Working context profiled and compacted."
         ]
 
 

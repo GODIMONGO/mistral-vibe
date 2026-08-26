@@ -20,20 +20,14 @@ class TestBuiltinSkills:
     def test_vibe_skill_has_inline_prompt(self) -> None:
         assert BUILTIN_SKILLS["vibe"].prompt
 
-    def test_vibe_skill_pins_readme_url_to_running_version(self) -> None:
-        from vibe import __version__
-
+    def test_vibe_skill_references_powerstral_repository(self) -> None:
         prompt = BUILTIN_SKILLS["vibe"].prompt
         assert "__VIBE_VERSION__" not in prompt
-        assert (
-            f"https://github.com/mistralai/mistral-vibe/blob/v{__version__}/README.md"
-            in prompt
-        )
+        assert "https://github.com/GODIMONGO/powerstral" in prompt
 
-    def test_vibe_skill_references_user_docs_url(self) -> None:
-        assert (
-            "https://docs.mistral.ai/vibe/code/overview"
-            in BUILTIN_SKILLS["vibe"].prompt
+    def test_vibe_skill_marks_upstream_docs_as_non_authoritative(self) -> None:
+        assert "not authoritative for fork-only capabilities" in (
+            BUILTIN_SKILLS["vibe"].prompt
         )
 
     def test_web_engineering_skill_is_registered_and_invocable(self) -> None:
@@ -42,6 +36,21 @@ class TestBuiltinSkills:
         assert skill.user_invocable is True
         assert "primary documentation" in skill.prompt
         assert "chrome_cdp" in skill.prompt
+
+    def test_software_engineering_skill_is_registered_and_invocable(self) -> None:
+        skill = BUILTIN_SKILLS["software-engineering"]
+
+        assert skill.user_invocable is True
+        assert "root cause" in skill.prompt
+        assert "map every completion claim to direct evidence" in skill.prompt
+
+    def test_coding_deepwiki_router_is_registered_without_eager_catalog(self) -> None:
+        skill = BUILTIN_SKILLS["coding-deepwiki"]
+        prompt = " ".join(skill.prompt.split())
+
+        assert skill.user_invocable is True
+        assert "1,000 specialized coding skills" in prompt
+        assert "10,000 stable DeepWiki articles" in prompt
 
     def test_discovers_builtin_skills(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("vibe.core.skills.manager.BUILTIN_SKILLS", BUILTIN_SKILLS)

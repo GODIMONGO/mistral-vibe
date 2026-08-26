@@ -78,6 +78,14 @@ class AutonomyConfig(BaseModel):
     aggressiveness: AutonomyAggressiveness = AutonomyAggressiveness.MEDIUM
     goal_advisor_model: str = ""
     reviewer_model: str = ""
+    vibe_thinking: ThinkingLevel = Field(
+        default="off",
+        description=(
+            "Harness-level strategic reflection performed before the main agent "
+            "response. Higher levels challenge direction, compare alternatives, "
+            "rehearse failure, and decide whether to continue or pivot."
+        ),
+    )
     max_review_retries: int = Field(default=3, ge=1, le=10)
     max_parallel_subagents: int = Field(
         default=4, ge=MIN_PARALLEL_SUBAGENTS, le=MAX_PARALLEL_SUBAGENTS
@@ -86,13 +94,52 @@ class AutonomyConfig(BaseModel):
         default="medium",
         description=(
             "How proactively agents use web search: off disables the tool; higher "
-            "levels increase online verification."
+            "levels broaden proactive verification, and high/max also search for "
+            "authoritative recovery guidance after non-web tool failures."
+        ),
+    )
+    gauntlet_loop: bool = Field(
+        default=False,
+        description=(
+            "Use a concrete, fetchable quality bar, separate builders and a harsh "
+            "critic, and repeat verified work until the result wins the comparison."
+        ),
+    )
+    boost_mode: bool = Field(
+        default=False,
+        description=(
+            "Enforce the BOOST quality pipeline for substantive root tasks: maximum "
+            "reasoning, autonomous planning, research, delegated execution, and "
+            "evidence-based independent review."
+        ),
+    )
+    personal_experience: bool = Field(
+        default=True,
+        description=(
+            "Continuously retrieve relevant local code, test, reviewer, and web "
+            "experience before root-agent decisions and save bounded, redacted "
+            "tool outcomes to SQLite without changing model weights."
         ),
     )
     max_live_child_runtimes: int = Field(default=8, ge=1, le=64)
     max_subagent_result_chars: int = Field(default=8192, ge=1024)
     require_worker: bool = True
     require_review: bool = True
+
+    @model_validator(mode="after")
+    def _apply_boost_profile(self) -> AutonomyConfig:
+        if not self.boost_mode:
+            return self
+        self.enabled = True
+        self.aggressiveness = AutonomyAggressiveness.MAX
+        self.vibe_thinking = "max"
+        self.max_parallel_subagents = MAX_PARALLEL_SUBAGENTS
+        self.web_search_activity = "max"
+        self.gauntlet_loop = True
+        self.personal_experience = True
+        self.require_worker = True
+        self.require_review = True
+        return self
 
     @property
     def effective_parallel_subagents(self) -> int:
@@ -119,6 +166,10 @@ class AutonomyConfig(BaseModel):
             case AutonomyAggressiveness.MAX:
                 cap = 10
         return min(self.max_review_retries, cap)
+
+    @property
+    def vibe_thinking_passes(self) -> int:
+        return THINKING_LEVELS.index(self.vibe_thinking)
 
     @property
     def context_refresh_turns(self) -> int:
@@ -165,6 +216,9 @@ class ProviderConfig(BaseModel):
     # stream (and retried). Set to False for OpenAI-compatible endpoints that
     # do not emit a finish reason, to avoid spurious incomplete-stream errors.
     emits_finish_reason: bool = True
+    enable_streaming: bool = True
+    supports_stream_options: bool = True
+    supports_reasoning_effort: bool = True
     project_id: str = ""
     region: str = ""
     extra_headers: dict[str, str] = Field(default_factory=dict)

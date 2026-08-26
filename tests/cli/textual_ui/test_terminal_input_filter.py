@@ -16,6 +16,7 @@ from vibe.cli.textual_ui.terminal_input_filter import (
     _DRIVER_MODULE_PREFIX,
     _ENABLE_SGR_MOUSE,
     FilteringXTermParser,
+    decode_win32_input_reports,
     filter_input,
     patch_driver_parser,
     strip_malformed_mouse,
@@ -68,6 +69,15 @@ DEVICE_ATTRIBUTES_REPORTS = [
     "\x1b[=1;2c",  # tertiary DA
 ]
 
+WIN32_INPUT_REPORTS = [
+    ("\x1b[69;18;1091;1;32;1_", "у"),
+    ("\x1b[78;49;1090;1;32;1_", "т"),
+    ("\x1b[13;28;13;1;0;1_", "\r"),
+    ("\x1b[37;75;0;1;0;1_", "\x1b[D"),
+    ("\x1b[65;30;97;1;0;3_", "aaa"),
+    ("\x1b[65;30;97;0;0;1_", ""),
+]
+
 
 @pytest.mark.parametrize("seq", COLOR_REPORTS)
 def test_strip_removes_osc_color_reports(seq: str) -> None:
@@ -87,6 +97,16 @@ def test_strip_removes_device_attributes_reports(seq: str) -> None:
 def test_strip_removes_repeated_device_attributes_keeping_real_key() -> None:
     report = DEVICE_ATTRIBUTES_REPORTS[0]
     assert filter_input(report * 5 + "\x1b[A") == "\x1b[A"
+
+
+@pytest.mark.parametrize(("report", "expected"), WIN32_INPUT_REPORTS)
+def test_decode_win32_input_reports(report: str, expected: str) -> None:
+    assert decode_win32_input_reports(report) == expected
+
+
+def test_decode_win32_input_keeps_surrounding_text() -> None:
+    report = "\x1b[69;18;1091;1;32;1_"
+    assert filter_input("до" + report + "после") == "доупосле"
 
 
 @pytest.mark.parametrize("seq", PRESERVED)
@@ -122,6 +142,22 @@ def test_parser_buffers_device_attributes_across_input_chunks(split_at: int) -> 
 
     assert [t for t in tokens if isinstance(t, events.Key) and t.character] == []
     assert any(isinstance(t, events.Key) and t.key == "up" for t in tokens)
+
+
+@pytest.mark.parametrize("split_at", range(1, len(WIN32_INPUT_REPORTS[0][0])))
+def test_parser_buffers_win32_input_across_chunks(split_at: int) -> None:
+    report, expected = WIN32_INPUT_REPORTS[0]
+    parser = FilteringXTermParser()
+
+    assert list(parser.feed(report[:split_at])) == []
+    tokens = list(parser.feed(report[split_at:]))
+
+    assert (
+        "".join(
+            event.character or "" for event in tokens if isinstance(event, events.Key)
+        )
+        == expected
+    )
 
 
 def test_parser_drops_repeated_device_attributes_one_character_at_a_time() -> None:

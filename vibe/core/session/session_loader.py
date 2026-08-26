@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
+from vibe.core.memory import is_working_memory_message
 from vibe.core.session.session_index import (
     MESSAGES_FILENAME,
     METADATA_FILENAME,
@@ -243,6 +246,18 @@ class SessionLoader:
         messages = [
             LLMMessage.model_validate(msg) for msg in data if msg["role"] != "system"
         ]
+        # Fast working memory is private model context, not public transcript
+        # history. New sessions persist its bounded system message atomically in
+        # metadata; old or malformed payloads remain loadable and are ignored.
+        working_memory = metadata.get("working_memory")
+        if isinstance(working_memory, dict):
+            try:
+                memory_message = LLMMessage.model_validate(working_memory)
+            except (ValidationError, ValueError):
+                pass
+            else:
+                if is_working_memory_message(memory_message):
+                    messages.append(memory_message)
 
         return messages, metadata
 

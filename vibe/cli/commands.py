@@ -58,8 +58,16 @@ class CommandRegistry:
             ),
             "model": Command(
                 aliases=frozenset(["/model"]),
-                description="Select active model",
-                handler="_show_model",
+                description="Select main, advisor, or reviewer model",
+                handler="_model_command",
+                side_channel=True,
+            ),
+            "opencode-go": Command(
+                aliases=frozenset(["/opencode-go"]),
+                description=(
+                    "Connect OpenCode Go and use DeepSeek V4 Flash for advisor/reviewer"
+                ),
+                handler="_opencode_go_command",
                 side_channel=True,
             ),
             "api-key": Command(
@@ -77,10 +85,19 @@ class CommandRegistry:
             "effort": Command(
                 aliases=frozenset(["/effort"]),
                 description=(
-                    "Tune thinking, agents, accuracy, and web search; includes UltraCode"
+                    "Tune model/Vibe thinking, agents, accuracy, web search, and Gauntlet; "
+                    "includes BOOST and UltraCode"
                 ),
                 handler="_effort_command",
                 side_channel=True,
+            ),
+            "boost": Command(
+                aliases=frozenset(["/boost"]),
+                description=(
+                    "Enable the evidence-driven BOOST intelligence profile or run "
+                    "an objective with it"
+                ),
+                handler="_boost_command",
             ),
             "reload": Command(
                 aliases=frozenset(["/reload"]),
@@ -157,6 +174,12 @@ class CommandRegistry:
                 handler="_show_status",
                 side_channel=True,
             ),
+            "harness": Command(
+                aliases=frozenset(["/harness"]),
+                description="Show harness plugins, capabilities, and active phase",
+                handler="_show_harness",
+                side_channel=True,
+            ),
             "subagents": Command(
                 aliases=frozenset(["/subagents"]),
                 description="Show active and recent subagent tasks",
@@ -165,7 +188,7 @@ class CommandRegistry:
             ),
             "tasks": Command(
                 aliases=frozenset(["/tasks"]),
-                description="Clear the persistent task status with /tasks clear",
+                description="Show task status, or clear it with /tasks clear",
                 handler="_tasks_command",
                 side_channel=True,
             ),

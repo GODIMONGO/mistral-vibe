@@ -9,12 +9,15 @@ from vibe.core.config.harness_files import (
     HarnessFilesManager,
     get_harness_files_manager,
 )
+from vibe.core.knowledge import get_coding_knowledge_catalog
 from vibe.core.skills.builtins import BUILTIN_SKILLS
 from vibe.core.skills.models import (
     ParsedSkillCommand,
     SkillConfigIssue,
     SkillInfo,
     SkillMetadata,
+    SkillScope,
+    SkillSource,
 )
 from vibe.core.skills.parser import SkillParseError, parse_skill_markdown
 from vibe.core.utils import name_matches
@@ -116,7 +119,9 @@ class SkillManager:
                 continue
             if (skill_info := self._try_load_skill(skill_file)) is None:
                 continue
-            if skill_info.name in BUILTIN_SKILLS:
+            if skill_info.name in BUILTIN_SKILLS or self._is_virtual_skill_name(
+                skill_info.name
+            ):
                 logger.debug(
                     "Skipping skill '%s' at %s because builtin skill names are reserved",
                     skill_info.name,
@@ -133,6 +138,12 @@ class SkillManager:
                 continue
             skills[skill_info.name] = skill_info
         return skills
+
+    @staticmethod
+    def _is_virtual_skill_name(name: str) -> bool:
+        if not name.startswith("coding-"):
+            return False
+        return get_coding_knowledge_catalog().get_skill(name) is not None
 
     def _try_load_skill(self, skill_file: Path) -> SkillInfo | None:
         try:
@@ -170,7 +181,30 @@ class SkillManager:
         return sum(name not in BUILTIN_SKILLS for name in self.available_skills)
 
     def get_skill(self, name: str) -> SkillInfo | None:
-        return self.available_skills.get(name)
+        if skill := self.available_skills.get(name):
+            return skill
+        if self._config.enabled_skills and not name_matches(
+            name, self._config.enabled_skills
+        ):
+            return None
+        if self._config.disabled_skills and name_matches(
+            name, self._config.disabled_skills
+        ):
+            return None
+        virtual = get_coding_knowledge_catalog().get_skill(name)
+        if virtual is None:
+            return None
+        return SkillInfo(
+            name=virtual.name,
+            description=virtual.description,
+            prompt=virtual.prompt,
+            source=SkillSource.BUILTIN,
+            scope=SkillScope.BUILTIN,
+        )
+
+    @property
+    def virtual_skills_count(self) -> int:
+        return get_coding_knowledge_catalog().skill_count
 
     def parse_skill_command(self, text_prompt: str) -> ParsedSkillCommand | None:
         stripped = text_prompt.strip()

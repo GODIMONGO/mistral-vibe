@@ -238,6 +238,31 @@ def _enter_worktree(args: argparse.Namespace) -> PreparedWorktree:
     return session
 
 
+def _require_worktree_source_trust(args: argparse.Namespace) -> None:
+    """Refuse to run Git in an untrusted source repository.
+
+    Worktree preparation necessarily happens before the Textual trust dialog,
+    so it cannot safely use that later prompt. ``--trust`` is explicit
+    ephemeral consent; otherwise the source must already be in the trust store.
+    """
+    if args.trust:
+        return
+    from rich import print as rprint
+
+    from vibe.core.trusted_folders import trusted_folders_manager
+
+    source = Path.cwd().resolve()
+    if trusted_folders_manager.is_trusted(source) is True:
+        return
+    rprint(
+        "[red]Error: --worktree requires a trusted source workspace.[/]\n"
+        "[yellow]Review the repository first, then trust it interactively or "
+        "rerun with --trust for this invocation.[/]",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def _prompt_remove_worktree(
     worktree: PreparedWorktree, cleanup_state: WorktreeCleanupState
 ) -> bool:
@@ -417,6 +442,7 @@ def main() -> None:
     # Must run before `cwd` is read and before run_cli so that session lookups
     # (-c / --resume picker) scope to the worktree directory.
     if args.worktree and not (args.setup or args.check_upgrade):
+        _require_worktree_source_trust(args)
         worktree_session = _enter_worktree(args)
 
     try:

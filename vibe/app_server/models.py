@@ -106,6 +106,23 @@ class AccountView(ProtocolModel):
     teleport_action: AccountAction | None = None
 
 
+class HarnessPluginView(ProtocolModel):
+    name: str
+    version: str
+    priority: int
+    capabilities: list[str] = Field(default_factory=list)
+    phases: list[str] = Field(default_factory=list)
+
+
+class HarnessRuntimeView(ProtocolModel):
+    """Public, backend-neutral description of the active agent harness."""
+
+    phase: str = "idle"
+    sequence: int = 0
+    capabilities: list[str] = Field(default_factory=list)
+    plugins: list[HarnessPluginView] = Field(default_factory=list)
+
+
 class IdentityEntityView(ProtocolModel):
     id: str
     name: str
@@ -701,6 +718,7 @@ class PublicReasoningEntry(_PublicHistoryEntryBase):
     type: Literal["reasoning"] = "reasoning"
     text: str
     summary: list[str] = Field(default_factory=list)
+    status_text: str | None = None
 
 
 class PublicEffectEntry(_PublicHistoryEntryBase):
@@ -778,6 +796,21 @@ class ScheduledLoopFiredNoticeDetail(ProtocolModel):
     loop_id: str
 
 
+class MemoryStatusNoticeDetail(ProtocolModel):
+    kind: Literal["memory_status"] = "memory_status"
+    status: Literal[
+        "restored",
+        "loaded",
+        "skipped",
+        "stale",
+        "error",
+        "experience_loaded",
+        "experience_saved",
+    ]
+    fast_entries: int = 0
+    persistent_entries: int = 0
+
+
 NoticeDetail = Annotated[
     HookNoticeDetail
     | AgentChangedNoticeDetail
@@ -786,7 +819,8 @@ NoticeDetail = Annotated[
     | PlanReviewStartedNoticeDetail
     | PlanReviewEndedNoticeDetail
     | WaitingForInputNoticeDetail
-    | ScheduledLoopFiredNoticeDetail,
+    | ScheduledLoopFiredNoticeDetail
+    | MemoryStatusNoticeDetail,
     Field(discriminator="kind"),
 ]
 

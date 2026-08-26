@@ -13,7 +13,11 @@ from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import VibeConfigSchema
-from vibe.core.llm.exceptions import BackendError, BackendErrorBuilder
+from vibe.core.llm.exceptions import (
+    BackendError,
+    BackendErrorBuilder,
+    IncompleteStreamError,
+)
 from vibe.core.middleware import (
     ConversationContext,
     MiddlewareAction,
@@ -83,7 +87,9 @@ async def test_act_flushes_batched_messages_with_injection_middleware() -> None:
         Role.user,
         Role.assistant,
     ]
-    assert observed[0][1] == "You are Vibe, a super useful programming assistant."
+    assert observed[0][1] is not None and observed[0][1].startswith(
+        "You are Vibe, a super useful programming assistant."
+    )
     assert observed[1][1] == "How can you help?"
     assert observed[2][1] == InjectBeforeMiddleware.injected_message
     assert observed[3][1] == "I can write very efficient code."
@@ -104,7 +110,9 @@ async def test_stop_action_flushes_user_msg_before_returning() -> None:
     assert len(observed) == 2
     # user's message should have been flushed before returning
     assert [r for r, _ in observed] == [Role.system, Role.user]
-    assert observed[0][1] == "You are Vibe, a super useful programming assistant."
+    assert observed[0][1] is not None and observed[0][1].startswith(
+        "You are Vibe, a super useful programming assistant."
+    )
     assert observed[1][1] == "Greet."
 
 
@@ -780,7 +788,7 @@ async def test_interleaved_reasoning_content_preserves_order() -> None:
 
 
 @pytest.mark.asyncio
-async def test_only_reasoning_chunks_yields_reasoning_event() -> None:
+async def test_only_reasoning_chunks_raise_incomplete_stream_error() -> None:
     backend = FakeBackend([
         mock_llm_chunk(content="", reasoning_content="Just thinking..."),
         mock_llm_chunk(content="", reasoning_content=" nothing to say yet."),
@@ -789,12 +797,10 @@ async def test_only_reasoning_chunks_yields_reasoning_event() -> None:
         config=make_config(), backend=backend, enable_streaming=True
     )
 
-    events = [event async for event in agent.act("Silent thinking")]
-
-    assert _snapshot_events(events) == [
-        ("ReasoningEvent", "Just thinking..."),
-        ("ReasoningEvent", " nothing to say yet."),
-    ]
+    with pytest.raises(
+        IncompleteStreamError, match="final answer or tool call after reasoning"
+    ):
+        _ = [event async for event in agent.act("Silent thinking")]
 
 
 @pytest.mark.asyncio

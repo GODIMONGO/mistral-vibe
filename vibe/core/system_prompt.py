@@ -17,6 +17,7 @@ from vibe.core.config.harness_files import (
 from vibe.core.memory import MemoryStoreError, render_global_memory
 from vibe.core.paths import VIBE_HOME
 from vibe.core.prompts import SystemPrompt, UtilityPrompt
+from vibe.core.tools.builtins.memory import MemoryConfig
 from vibe.core.utils import (
     WindowsShellKind,
     get_platform_display_name,
@@ -384,7 +385,15 @@ def _get_web_search_policy(config: VibeConfigSchema) -> str:
                 "Aggressively use web_search to verify relevant factual claims, compare "
                 "multiple sources when useful, and cite the evidence in the answer."
             )
-    return "## Web search activity\n\n" + instruction
+    privacy = (
+        " Inspect user-provided local files, repositories, logs, infrastructure, "
+        "and referenced local/Codex sessions before considering public search. Never "
+        "send raw local paths, authenticated URLs, host/IP targets, thread IDs, "
+        "credentials, or private logs to a public search engine. If external "
+        "documentation is later needed, search only a generic redacted technical "
+        "question."
+    )
+    return "## Web search activity\n\n" + instruction + privacy
 
 
 def _get_available_web_search_policy(
@@ -393,6 +402,103 @@ def _get_available_web_search_policy(
     if tool_manager is not None and "web_search" not in tool_manager.available_tools:
         return ""
     return _get_web_search_policy(config)
+
+
+def _get_local_reference_policy() -> str:
+    return (
+        "## Local references\n\n"
+        "Treat user-provided filesystem paths, infrastructure endpoints, logs, and "
+        "session references as primary local evidence. A `codex://threads/<id>` "
+        "reference names a Codex thread, not a web URL and not a Vibe session ID. "
+        "On a local machine, locate its matching read-only JSONL record under "
+        "`~/.codex/sessions` and extract only the evidence needed for the task; do "
+        "not invoke Vibe `/resume` for it. Never copy credentials or private thread "
+        "contents into public web search or durable memory. Durable memory may keep "
+        "only non-secret connection metadata such as host aliases and key paths."
+    )
+
+
+def _get_gauntlet_loop_policy(config: VibeConfigSchema) -> str:
+    if not config.autonomy.gauntlet_loop:
+        return ""
+    return (
+        "## Gauntlet Loop\n\n"
+        "Gauntlet Loop is enabled. For every substantial goal, establish a real, "
+        "named, fetchable, and directly comparable quality bar before implementation. "
+        "Use web_search or other available tools to obtain the actual reference; never "
+        "invent or compare against a description. Split the work into independently "
+        "judgeable pieces. Assign implementation to builders and evaluation to a "
+        "separate harsh critic with fresh context. The critic must make a binary blind "
+        "choice between the actual output and the bar, then identify the largest "
+        "remaining gap. Continue improving and rechecking until our output wins, the "
+        "user stops the run, or a runtime safety/resource limit blocks further work. "
+        "Do not let a builder approve its own work and do not substitute a numeric "
+        "self-score for the comparison. Pattern adapted from robonuggets/gauntlet-loop "
+        "(CC BY 4.0)."
+    )
+
+
+def _get_boost_policy(config: VibeConfigSchema) -> str:
+    if not config.autonomy.boost_mode:
+        return ""
+    return (
+        "## BOOST intelligence profile\n\n"
+        "BOOST is an enforced quality profile, not a claim that the underlying model "
+        "became another vendor's model. For each substantive request, analyze intent "
+        "before orchestration, materialize a compact plan, research uncertain or "
+        "current claims with available repository/web tools, delegate independent "
+        "work, and require a fresh evidence-based reviewer verdict. Treat memory and "
+        "prior summaries as leads rather than proof. Never report completion from "
+        "confidence alone: match every material claim to a test, file, tool result, "
+        "or observable state. Trivial conversation remains direct to avoid waste."
+    )
+
+
+def _get_parallel_execution_policy(
+    config: VibeConfigSchema, tool_manager: ToolManager | None
+) -> str:
+    if not config.autonomy.enabled or tool_manager is None:
+        return ""
+    available = tool_manager.available_tools
+    if not available:
+        return ""
+    return (
+        "## Fast batched execution\n\n"
+        "Minimize model round trips. Before each tool phase, identify every operation "
+        "whose inputs are already known. Emit independent read_file, grep, web_search, "
+        "and read-only diagnostic calls together in the same assistant response; the "
+        "runtime executes multiple tool calls concurrently. Do not request one file or "
+        "one query per model turn when the full batch is known. For dependent, cheap "
+        "shell diagnostics in one working directory, prefer one bounded multiline "
+        "shell script or command chain with a timeout instead of several shell turns. "
+        "Use the shell family exposed by the active tool and keep one shell language "
+        "end-to-end. Run independent test suites as concurrent tool calls when they do "
+        "not contend for the same files, ports, database, or cache. Never parallelize "
+        "mutations that touch overlapping state, and never hide destructive operations "
+        "inside a batch. After a batch, consume all results before choosing the next "
+        "wave. Aim for 2-4 useful calls per read/verification wave, not artificial "
+        "micro-calls or unbounded fan-out."
+    )
+
+
+def _get_automatic_memory_policy(tool_manager: ToolManager | None) -> str:
+    if tool_manager is None or "memory" not in tool_manager.available_tools:
+        return ""
+    memory_config = tool_manager.get_tool_config("memory")
+    if not isinstance(memory_config, MemoryConfig) or not memory_config.auto_remember:
+        return ""
+    return (
+        "## Automatic Memory\n\n"
+        "Before finalizing each root response, decide whether the user clearly "
+        "expressed a durable preference, corrected a recurring behavior, or "
+        "confirmed a long-lived convention that will be useful in future sessions. "
+        "If so, proactively call the memory tool with action=remember without "
+        "waiting for a /memory command, then briefly report what was saved. Keep the "
+        "note short and factual. Do not save inferred personal details, secrets, "
+        "credentials, temporary task state, guesses, or facts learned only from "
+        "tools or web pages. Do not save anything when no clearly durable item was "
+        "provided."
+    )
 
 
 def get_universal_system_prompt(
@@ -425,8 +531,20 @@ def get_universal_system_prompt(
         sections.append(f"Your model name is: `{config.get_active_model().alias}`")
 
     sections.extend(
-        filter(None, [_get_available_web_search_policy(config, tool_manager)])
+        filter(
+            None,
+            [
+                _get_local_reference_policy(),
+                _get_available_web_search_policy(config, tool_manager),
+            ],
+        )
     )
+    sections.extend(filter(None, [_get_gauntlet_loop_policy(config)]))
+    sections.extend(filter(None, [_get_boost_policy(config)]))
+    sections.extend(
+        filter(None, [_get_parallel_execution_policy(config, tool_manager)])
+    )
+    sections.extend(filter(None, [_get_automatic_memory_policy(tool_manager)]))
 
     if config.include_prompt_detail:
         sections.append(_get_tool_aware_os_system_prompt(tool_manager))

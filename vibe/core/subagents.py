@@ -21,6 +21,18 @@ class TaskArgs(BaseModel):
         default="explore",
         description="The type of specialized subagent to use for this task",
     )
+    max_turns: int | None = Field(
+        default=None,
+        ge=1,
+        le=64,
+        description="Optional hard limit on model turns used by this subagent.",
+    )
+    timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        le=5_400,
+        description="Optional wall-clock deadline for the complete subagent run.",
+    )
 
 
 class TaskResult(BaseModel):
@@ -34,6 +46,9 @@ class TaskResult(BaseModel):
     )
     original_chars: int = Field(
         default=0, ge=0, description="Response length before bounded accumulation"
+    )
+    evidence_tool_calls: int = Field(
+        default=0, ge=0, description="Successful tool observations made by the subagent"
     )
 
     @model_validator(mode="after")
@@ -76,6 +91,7 @@ class SubagentRunnerPort(Protocol):
 DEFAULT_SUBAGENT_RESULT_MAX_CHARS = 8_192
 MIN_SUBAGENT_RESULT_MAX_CHARS = 1_024
 SUBAGENT_TRUNCATION_MARKER = "\n\n[... subagent response truncated ...]\n\n"
+_REVIEW_EVIDENCE_TOOLS = frozenset({"grep", "read_file", "web_search"})
 
 
 @dataclass(slots=True)
@@ -86,6 +102,7 @@ class SubagentRunAccumulator:
     _original_chars: int = 0
     _truncated: bool = False
     _completed: bool = True
+    _evidence_tool_calls: int = 0
 
     def __post_init__(self) -> None:
         if self.max_chars <= len(SUBAGENT_TRUNCATION_MARKER):
@@ -105,6 +122,12 @@ class SubagentRunAccumulator:
             return None
         if event.result is None or event.tool_class is None:
             return None
+        if (
+            not event.error
+            and not event.cancelled
+            and event.tool_name in _REVIEW_EVIDENCE_TOOLS
+        ):
+            self._evidence_tool_calls += 1
         if event.presentation is not None:
             display = event.presentation.display
         else:
@@ -126,6 +149,7 @@ class SubagentRunAccumulator:
             completed=self._completed and completed,
             truncated=self._truncated,
             original_chars=self._original_chars,
+            evidence_tool_calls=self._evidence_tool_calls,
         )
 
     def _append(self, content: str) -> None:

@@ -1,12 +1,36 @@
 from __future__ import annotations
 
+import pytest
+
 from vibe.core.subagents import (
     SUBAGENT_TRUNCATION_MARKER,
     SubagentRunAccumulator,
+    TaskArgs,
     TaskResult,
 )
 from vibe.core.tools.builtins.bash import Bash, CapturedShellResult
+from vibe.core.tools.builtins.read_file import ReadFile, ReadFileResult
 from vibe.core.types import AssistantEvent, ToolResultEvent
+
+
+def test_task_args_accept_bounded_runtime_limits() -> None:
+    args = TaskArgs(task="Inspect the code", max_turns=8, timeout_seconds=300)
+    assert args.max_turns == 8
+    assert args.timeout_seconds == 300
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_turns", 0),
+        ("max_turns", 65),
+        ("timeout_seconds", 0),
+        ("timeout_seconds", 5_401),
+    ],
+)
+def test_task_args_reject_unbounded_runtime_limits(field: str, value: int) -> None:
+    with pytest.raises(ValueError):
+        TaskArgs.model_validate({"task": "Inspect", field: value})
 
 
 def test_subagent_run_accumulates_response_and_tool_progress() -> None:
@@ -36,7 +60,27 @@ def test_subagent_run_accumulates_response_and_tool_progress() -> None:
         turns_used=1,
         completed=True,
         original_chars=len("Found the issue"),
+        evidence_tool_calls=0,
     )
+
+
+def test_subagent_evidence_counts_only_observation_tools() -> None:
+    accumulator = SubagentRunAccumulator()
+    result = ReadFileResult(
+        file_path="/repo/app.py", content="print('verified')", num_lines=1, start_line=1
+    )
+
+    accumulator.observe(
+        ToolResultEvent(
+            tool_name="read_file",
+            tool_class=ReadFile,
+            result=result,
+            tool_call_id="read-1",
+        ),
+        tool_call_id="task-1",
+    )
+
+    assert accumulator.build_result(turns_used=1).evidence_tool_calls == 1
 
 
 def test_subagent_run_combines_observed_and_runtime_failures() -> None:

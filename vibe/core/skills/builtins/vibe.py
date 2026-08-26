@@ -3,18 +3,17 @@ from __future__ import annotations
 from vibe import __version__
 from vibe.core.skills.models import SkillInfo, SkillSource
 
-_PROMPT_TEMPLATE = """# Vibe CLI Self-Awareness
+_PROMPT_TEMPLATE = """# Powerstral CLI Self-Awareness
 
-You are running inside **Mistral Vibe**, a CLI coding agent built by Mistral AI.
+You are running inside **Powerstral**, an autonomous fork of Mistral Vibe.
 This skill gives you full knowledge of the application internals so you can help
-the user understand, configure, and troubleshoot their Vibe installation.
+the user understand, configure, and troubleshoot their Powerstral installation.
 
 ## Going Deeper
 
-For facts not covered here, fetch the README pinned to the running version:
-https://github.com/mistralai/mistral-vibe/blob/v__VIBE_VERSION__/README.md
-(do not use `main` — it may not match what is installed). Point the user at
-https://docs.mistral.ai/vibe/code/overview for human-readable docs.
+For Powerstral-specific facts not covered here, inspect the local README first,
+then https://github.com/GODIMONGO/powerstral. Upstream Mistral documentation may
+describe the base product but is not authoritative for fork-only capabilities.
 
 ## VIBE_HOME
 
@@ -81,14 +80,18 @@ is present. Set `ask_confirmation_on_exit = false` to make `Ctrl+D` quit on the
 first press (also toggleable in `/config`); `Ctrl+C` always requires a second
 press. `Ctrl+Z` suspends on POSIX (resume with `fg`).
 
+The chat input remains active while an agent or shell command runs. Submitted
+prompts, shell commands, and non-side-channel slash commands are queued in order.
+On Windows, Vibe decodes ConPTY Win32 input packets so typing during a managed
+Git Bash command produces normal characters instead of numeric escape sequences.
+
 ### Update
 
-Vibe never updates silently. With `enable_update_checks = true` (default), it
-polls PyPI for `mistral-vibe` daily and prompts on the next launch when a
-newer release exists; accepting runs `uv tool upgrade mistral-vibe`, then
-`brew upgrade mistral-vibe` as a fallback. Disable via `enable_update_checks
-= false`. Run `vibe --check-upgrade` to check immediately, prompt to install a newer
-version if one exists, and exit. Initial install: `uv tool install mistral-vibe`.
+Powerstral never upgrades from the upstream `mistral-vibe` PyPI package because
+that would remove fork functionality. Automatic update execution is disabled
+until Powerstral has a fork-owned immutable release channel. `vibe
+--check-upgrade` prints the safe repository location. Review local changes and
+update from https://github.com/GODIMONGO/powerstral explicitly.
 
 ### Version
 
@@ -177,6 +180,11 @@ enabled = false
 aggressiveness = "medium"         # low | medium | high | max
 goal_advisor_model = ""           # Empty means the active model
 reviewer_model = ""               # Empty means advisor, then active model
+vibe_thinking = "off"             # 0..4 independent candidates + compact synthesis
+web_search_activity = "medium"     # off | low | medium | high | max
+gauntlet_loop = false              # real bar + separate builder/critic loop
+boost_mode = false                 # enforced Sonnet 5-class orchestration profile
+personal_experience = true         # local SQLite RAG before each root decision
 max_review_retries = 3
 max_parallel_subagents = 4        # 0 disables subagents; maximum 16
 max_live_child_runtimes = 8
@@ -193,11 +201,35 @@ max_controls = 80
 max_text_chars = 4000
 ```
 
-Autonomous mode starts the advisor before the main model call. The runtime validates
-and writes the advisor's todo dependency graph (`depends_on` contains prerequisite
+The root runtime first assigns a zero-token local performance profile. Mini,
+medium, and large classifications control orchestration depth only; they do not
+impose a total wall-clock, token, or main-turn limit. Verification remains a
+mandatory completion gate. Medium plans are capped at 6 tasks, large plans at 12; review retries
+are capped at 1 and 2 respectively. The selected Vibe-thinking level is literal:
+low/medium/high/max always run 1/2/3/4 visible passes and are not silently reduced
+by the performance profile. A full multi-route cycle runs at task start, every ten
+completed main turns, and immediately after a tool failure. Between full cycles a
+visible 192-token `Fast thinking` call checks direction, strongest evidence,
+largest proof gap, and the next action using low provider reasoning. `task` accepts optional
+`max_turns` (1-64) and `timeout_seconds` (up to 5400), and automatic advisor,
+worker, and reviewer calls always receive profile-derived limits so a hung child is
+interrupted.
+
+Autonomous root and child agents use fast batched execution: issue 2-4 independent
+reads, searches, or verification calls in one model response so the runtime runs
+them concurrently. Combine dependent cheap diagnostics into one bounded multiline
+shell script, but keep overlapping mutations and contended tests sequential. Read
+all results from the current wave before deciding the next one.
+
+The active main model then performs a bounded intent analysis. Direct questions
+and simple task-management requests bypass the advisor. A locally recognized code
+action cannot be downgraded to direct by that classifier: mini work receives a
+compact advisor/worker/reviewer pipeline, and medium work can dispatch up to three
+independent explore or worker tasks concurrently. Parallel mutating workers must
+own disjoint files or components; dependencies keep overlapping work serialized.
+The runtime validates and writes the advisor's todo dependency graph (`depends_on` contains prerequisite
 todo IDs), then automatically delegates ready work in dependency waves. Independent
-read-only tasks can run concurrently; mutating workers run one at a time to avoid
-workspace conflicts. After the root integrates results, the runtime automatically
+read-only and disjoint mutating tasks can run concurrently. After the root integrates results, the runtime automatically
 starts a fresh reviewer and requires specific `EVIDENCE_CHECKED: <claim> =>
 <evidence>` records followed by `VERDICT: PASS`. The plan, subagent calls,
 advisor status, and reviewer status are visible in the CLI.
@@ -206,27 +238,85 @@ are bounded; persisted child sessions reload on demand. Use
 `vibe --add-api-key ALIAS` to configure the exact provider credential for
 an advisor/reviewer model without exposing the key. A configured Devstral alias is
 the recommended Mistral-backed advisor; an empty alias safely follows the active
-model.
+model. Advisor and reviewer child profiles force that selected model to
+`thinking = "max"` without changing the main agent's thinking level.
 
 Autonomous context is compacted before it is repeated across advisor, worker,
-and reviewer calls. Oversized subagent results retain their head and final
-verdict, and reviewer evidence is deduplicated. Lower a model's
-`auto_compact_threshold` below the 200000 default for earlier history
-compaction and lower repeated-input usage.
+and reviewer calls. Scheduled autonomy refreshes compact only after 90% of the
+configured context threshold is used; they never compact merely because a small
+number of turns elapsed. The dedicated compaction model profiles the smallest
+working set: objective, constraints, plan/file state, verified evidence, failed
+routes, reload map, and next action. It drops stale tool output and narration.
+The generated profile is capped at 4096 tokens, while verbatim prior user
+messages have a separate 12000-token budget. Oversized subagent results retain
+their head and final verdict, and reviewer evidence is deduplicated. Lower a
+model's `auto_compact_threshold` below the 200000 default only when earlier
+compaction is intentionally preferred.
 
-`/effort` independently controls thinking, the 0-16 subagent limit, answer
-accuracy, and web-search activity. Accuracy levels `low|medium|high|max` map to
+`/effort` independently controls provider-model thinking, Vibe thinking, the 0-16
+subagent limit, answer accuracy, web-search activity, and personal experience.
+Personal experience is a bounded local SQLite RAG: it retrieves redacted relevant
+code, test, advisor/reviewer, and web-search outcomes before every root decision
+and updates them once per tool batch. Retrieval requires lexical or related-stem
+relevance, then prioritizes the current project and repeated experience. It adapts
+harness context rather than model weights and uses no embedding/API call.
+Vibe thinking is a
+harness-level preflight layer: `off|low|medium|high|max` runs `0|1|2|3|4` rigorous
+independent deliberation calls and passes the refined brief to the main agent.
+Each call requests the matching native model reasoning effort when the provider
+supports it, plus a level-scaled
+768/1024/1280/1536 output budget, and up to 24,000 characters of current evidence.
+The final brief must separate observations from assumptions, compare competing
+routes, state the strongest counterargument, define an observable verification,
+and name a concrete pivot trigger. It
+runs before every root-agent decision, including after tool, command, and web-search
+results, but not recursively in subagents. Each pass and decision uses additional
+tokens; its brief is removed immediately after the decision to avoid growing the
+session context. The loading line first displays `Vibe thinking N/M`, then a bounded
+decision summary with `CONTINUE`/`PIVOT`, the next action, and the largest proof gap.
+The same summary remains on the collapsed thought row; expanding it shows only the
+operational goal, evidence, plan, completion gate, and pivot trigger rather than raw
+hidden chain-of-thought. The refined brief flags claims that need web verification and directs the main
+agent to ask one focused clarification instead of guessing when an ambiguity is
+material. Accuracy levels `low|medium|high|max` map to
 temperatures `1.0|0.7|0.2|0.0`. Web activity `off|low|medium|high|max` disables
-search at `off` and progressively increases proactive online verification.
-The direct form is `/effort THINKING SUBAGENTS ACCURACY WEB`; UltraCode sets all
-four controls to `max`.
+search at `off`; `low` pre-searches explicit research/search requests; `medium`
+also pre-searches time-sensitive, version, documentation, API, comparison, and
+verification requests; `high` and `max` pre-search substantive root requests except
+source-bound local/private work. Automatic search never submits raw local paths,
+Codex thread references, authenticated URLs, host/IP targets, credentials, or private
+logs. The agent inspects user-provided local sources first and, when external docs are
+still needed, uses a generic redacted query.
+At `high|max`, a failed non-web tool also triggers one deduplicated visible recovery
+search for current primary documentation. Obvious greetings are skipped.
+The normal tool event shows the query, result, and sources or an explicit failure.
+The direct form is
+`/effort MODEL_THINKING SUBAGENTS ACCURACY WEB VIBE_THINKING GAUNTLET BOOST EXPERIENCE`,
+where the last three switches are `off|on`. BOOST is a persisted, enforced quality
+profile targeting Sonnet 5-class behavior through orchestration rather than
+claiming to replace the underlying model. It atomically selects max model/Vibe
+thinking, deterministic accuracy, visible max web verification, 16 subagents,
+Gauntlet, required workers, and a fresh evidence-based reviewer. Its advisor
+separates facts from assumptions and defines observable proof; its reviewer
+re-opens artifacts, runs relevant checks, challenges the approach against an
+alternative, and rejects unsupported claims. Trivial greetings skip automatic
+search and the four extra deliberation calls to avoid wasting tokens. Gauntlet
+Loop adapts the CC BY 4.0 pattern from
+`robonuggets/gauntlet-loop`: acquire a named fetchable comparable quality bar,
+separate builders from a fresh harsh critic, compare actual outputs blindly, and
+repeat until ours wins, the user stops, or a runtime safety/resource limit blocks
+progress. UltraCode remains a separate maximum-swarm execution mode and enables
+BOOST as one component. Neither BOOST nor a thinking control proves equivalence
+to another closed model or guarantees certainty without task-specific evals.
 
 The Textual UI keeps a persistent task status bar above the input while a todo
 plan exists. It shows the current, completed, waiting, and cancelled tasks,
 updates from live todo events, and restores the latest plan after resume.
-`/tasks clear` (or the plain request `убери все задачи`) dismisses the current
-plan locally without an LLM call and remembers that dismissal for the session
-until a new todo plan is created.
+`/tasks` prints the same plan status in the transcript. `/tasks clear` dismisses
+the current plan locally without an LLM call and remembers that dismissal for the
+session until a new todo plan is created. Natural-language
+task-management requests go through the main model's intent analysis and bypass the
+advisor when classified as direct.
 
 On Windows, `computer_use` provides bounded structured observation, one
 overwriting PNG screenshot in the session scratchpad, focus, click, Unicode typing,
@@ -262,6 +352,12 @@ Mistral returns HTTP 401/402 or a quota-specific HTTP 403/429. The switch is sti
 for the root session and its subagents. Ordinary rate limits and other API errors
 are not hidden. Streaming switches only before the first chunk, so two providers'
 answers are never combined. Empty disables fallback.
+
+Advisor orchestration also fails open: if the dedicated goal-advisor subagent cannot
+complete (for example because its separate API is exhausted), Vibe visibly retries
+planning with the active main model. If that utility call also fails, Vibe materializes
+a conservative root-owned plan and lets the main agent continue; it does not abandon
+the user's turn solely because the optional advisor is unavailable.
 
 The alias must refer to a `[[models]]` entry whose `[[providers]]` entry uses a
 separate `api_key_env_var`. Run `vibe --add-api-key ALIAS` to enter or replace
@@ -308,7 +404,14 @@ extra_headers = { "X-Custom-Header" = "value" }  # optional per-provider HTTP he
 emits_finish_reason = false  # set false for OpenAI-compatible endpoints that end
                              # streams without a finish reason; avoids spurious
                              # "incomplete stream" errors and retries (default true)
+enable_streaming = false  # use one non-streaming request when the endpoint cannot stream
+supports_stream_options = false  # omit OpenAI stream_options when unsupported
+supports_reasoning_effort = false  # omit reasoning_effort when unsupported
 ```
+
+The three capability switches default to `true`. Set only the unsupported
+features to `false` for local or partially OpenAI-compatible servers; Powerstral
+then changes the actual request instead of repeatedly sending rejected fields.
 
 ### Models
 
@@ -371,6 +474,7 @@ max_results = 5                   # 1-10; public response body is capped
 
 [tools.memory]
 permission = "ask"                # "always" permits autonomous memory writes
+auto_remember = false              # Proactively save clear durable preferences
 ```
 
 `web_search` is available without a separate API key through the bounded public
@@ -386,6 +490,24 @@ The store is capped at 100 entries, 2,000 characters per entry, and 12,000 promp
 characters; exact notes are deduplicated. It rejects likely credentials and must
 not be used for secrets, payment data, transient task state, or unverified
 assumptions. Saved facts are potentially stale and must be verified before use.
+With `[tools.memory].auto_remember = true`, the root model proactively calls
+`remember` when the user clearly expresses a durable preference, corrects a
+recurring behavior, or confirms a long-lived convention. It does not require a
+`/memory` command and must not infer or save personal details, secrets, temporary
+task state, guesses, or facts learned only from tools/web pages. The default is
+off; writes still follow the memory tool permission.
+The first root request visibly reports whether memory was loaded, empty, skipped,
+or invalid. A loaded report means the entries are in every model request for that
+session; their contents remain hidden from the status message.
+
+Fast working memory is separate from global memory. After each root tool batch,
+Powerstral appends one bounded session ledger containing up to 12 deduplicated
+action fingerprints, safe action summaries, statuses, and actual results. Only the
+latest ledger is sent to the model, but it remains append-only in the session log
+and survives compaction and resume. The model must consult it before acting: do not
+repeat a successful action without fresh need, and do not repeat a failed action
+without changing inputs or conditions. The ledger is capped at 8,000 characters,
+redacts likely credentials, and is never promoted to cross-project global memory.
 
 The built-in shell surface is controlled by the `managed_shell_tools_enabled` config
 field and the `vibe_cli_managed_shell_tools` GrowthBook experiment. The default variant
@@ -402,6 +524,11 @@ Managed shell sessions return a `session_id`, inline output, a cursor for pollin
 more output, and a log path under `~/.vibe/shell-tool/sessions/`. Long-running
 commands can be left alive with `background = true`, and interactive commands can
 be driven with the matching stdin tool.
+Foreground commands use hard timeouts by default. The model should set a bounded
+`timeout_seconds` appropriate to the task (for example `300` for five minutes); on
+expiry Vibe terminates the process tree and returns a timeout error so the agent can
+inspect partial output, fix or split the operation, and retry. Set
+`hard_timeout = false` only to intentionally hand a live session over for polling.
 
 POSIX `bash` reads permissions, allowlists, and denylists from `[tools.bash]`.
 Native Windows `git_bash` reads them from `[tools.git_bash]`; native Windows
@@ -843,19 +970,39 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 
 ## Built-in Slash Commands
 
+- `/harness` - Show the active session harness phase, event sequence, plugin
+  composition, and capabilities. Powerstral's normal Python runtime is a
+  session-scoped plugin harness: model, tools, permissions, orchestration,
+  subagents, memory, web research, compaction, review, and hooks remain outside
+  the replaceable LLM backend. Plugins may intercept typed turn/step/model/tool
+  lifecycle phases through an ordered waterfall and can require another
+  verification step before completion.
 - `/api-key` - Select a configured model and securely add or replace its API
   key in a masked field. Pass an alias (`/api-key ALIAS`) to skip the picker.
+- `/opencode-go` - Securely connect an OpenCode Go subscription. The command
+  keeps the main Mistral worker selected with thinking `medium` and assigns
+  `opencode-go/deepseek-v4-flash` (thinking `max`, temperature `0.0`) to both
+  goal advisor and reviewer. The built-in OpenCode Go catalog covers Chat Completions,
+  Anthropic Messages, and OpenAI Responses models.
 - `/goal <objective>` - Switch to the autonomous agent and run the objective with
   mandatory planning, worker delegation, fresh verification, and final review.
   When the session is busy, the command waits in the main input queue.
 - `/help` - Show help message
 - `/config` - Full-screen settings browser. Fields show their value and origin layer (default / TOML / env / override). Type to filter, arrows to move, Enter to edit; booleans toggle, closed-set fields (theme, models) pick from a list, scalars edit inline, complex fields open a JSON editor. The edit modal shows an inspector of the layers setting the field; edits persist to the TOML layer by default, `Tab` targets the ephemeral session override (until restart), and `Ctrl+R` clears the field one writable layer at a time toward the default. The `tools` field opens a grouped tool list with a per-tool config editor (permission, allow/deny lists, `Ctrl+E` for raw JSON). Enabling/disabling whole MCP servers or connectors stays in `/mcp`.
-- `/model` - Select active model
-- `/thinking` - Select thinking level
-- `/effort` - Open the slider panel for independent thinking (`off` to `max`)
-  and subagent-limit (`0` to `16`) selection. Direct form:
-  `/effort LEVEL [0-16]`. The UltraCode row sets every model role to max,
-  enables autonomy, and selects 16 subagents.
+- `/model` - Open the model control center for the main model, goal advisor,
+  reviewer, model thinking, effort, and OpenCode Go. Use `/model main`,
+  `/model advisor`, or `/model reviewer` to jump directly to one role picker.
+- `/thinking` - Select provider-native internal reasoning. Higher levels reason
+  more thoroughly but do not guarantee certainty.
+- `/effort` - Open the slider panel for independent model thinking, Vibe
+  strategic reflection (`0` to `4` independent candidates plus compact-model
+  synthesis with a mandatory plan and completion gate), subagent
+  limit (`0` to `16`), accuracy, web search, and Gauntlet Loop. Direct form:
+  `/effort MODEL_THINKING SUBAGENTS ACCURACY WEB VIBE_THINKING GAUNTLET BOOST EXPERIENCE`.
+  The BOOST row enforces the complete research/planning/worker/reviewer quality
+  pipeline. The separate UltraCode row enables BOOST plus maximum swarm execution.
+- `/boost [objective]` - Enable the BOOST intelligence profile or run an
+  objective through its evidence-driven pipeline.
 - `/subagents` - Show active and recent child-agent tasks.
 - `/ultracode [objective]` - Open the UltraCode preset or run a difficult
   objective with max thinking and the maximum bounded swarm.
@@ -1000,6 +1147,13 @@ when the session is idle.
 
 Skills are specialized instruction sets the model can load on demand.
 Each skill is a directory containing a `SKILL.md` file with YAML frontmatter.
+Powerstral also bundles `software-engineering` for root-cause implementation and
+evidence-based completion, plus `web-engineering` for full-stack, API, browser,
+security, accessibility, performance, and primary-source verification workflows.
+The `coding-deepwiki` router exposes 1,000 lazy virtual coding skills and 10,000
+stable articles through the read-only `deep_wiki` search/read tool. Virtual names
+are resolved by the normal `skill` tool but omitted from startup discovery output
+to preserve latency and context. Use web search for unstable version/API facts.
 
 ### Skill File Format
 
@@ -1081,7 +1235,10 @@ directory is explicitly trusted.
 Interactive mode prompts to trust unknown folders. The prompt targets the
 closest ancestor of the cwd (the cwd itself included) containing a `.git`
 entry; the search excludes the user's home directory and the filesystem
-root, and falls back to the cwd if no qualifying ancestor is found.
+root, and falls back to the cwd if no qualifying ancestor is found. Decline is
+the safe default. Worktree creation/selection is rejected before Git runs until
+the source workspace is trusted or the caller explicitly supplies ephemeral
+trust for that session.
 Programmatic mode (`-p`/`--prompt`) never prompts: the folder is untrusted.
 Use `--trust` to trust cwd for the current invocation only (not persisted).
 
@@ -1117,7 +1274,7 @@ project root (the folder must be trusted first)."""
 
 SKILL = SkillInfo(
     name="vibe",
-    description="""Authoritative reference for Mistral Vibe — the CLI agent you (the model) are running inside.
+    description="""Authoritative reference for Powerstral — the autonomous Mistral Vibe fork you (the model) are running inside.
 
 LOAD when the user:
 - asks anything about Vibe itself, even by indirect name ("this CLI", "this tool", "you");

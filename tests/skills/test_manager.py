@@ -288,6 +288,32 @@ class TestSkillManagerGetSkill:
     def test_returns_none_for_unknown_skill(self, skill_manager: SkillManager) -> None:
         assert skill_manager.get_skill("nonexistent-skill") is None
 
+    def test_resolves_virtual_coding_skill_without_eager_discovery(self) -> None:
+        manager = SkillManager(lambda: build_test_vibe_config())
+
+        skill = manager.get_skill("coding-python-debug-failure-production")
+
+        assert skill is not None
+        assert skill.source.value == "builtin"
+        assert "coding-python-debug-failure-production" not in (
+            manager.available_skills
+        )
+        assert manager.virtual_skills_count == 1_000
+
+    def test_virtual_coding_skills_respect_skill_filters(self) -> None:
+        disabled = SkillManager(
+            lambda: build_test_vibe_config(disabled_skills=["coding-*"])
+        )
+        enabled_elsewhere = SkillManager(
+            lambda: build_test_vibe_config(enabled_skills=["web-engineering"])
+        )
+
+        assert disabled.get_skill("coding-python-debug-failure-production") is None
+        assert (
+            enabled_elsewhere.get_skill("coding-python-debug-failure-production")
+            is None
+        )
+
 
 class TestSkillManagerFiltering:
     def test_enabled_skills_filters_to_only_enabled(self, skills_dir: Path) -> None:

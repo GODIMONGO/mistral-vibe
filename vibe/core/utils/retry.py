@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum, auto
 import functools
 import logging
+import time
 
 import httpx
 
@@ -75,6 +76,33 @@ class RetryReason:
 type RetryObserver = Callable[[RetryReason], Awaitable[None]]
 
 
+def _retry_delay(error: Exception, fallback: float) -> float:
+    """Honor a numeric Retry-After header without trusting unbounded input."""
+    if not isinstance(error, httpx.HTTPStatusError):
+        return fallback
+    value = error.response.headers.get("retry-after")
+    if value is None:
+        return fallback
+    try:
+        return max(fallback, float(value))
+    except ValueError:
+        return fallback
+
+
+def _delay_within_budget(
+    error: Exception,
+    fallback: float,
+    *,
+    started_at: float,
+    max_elapsed_seconds: float | None,
+) -> float | None:
+    delay = _retry_delay(error, fallback)
+    if max_elapsed_seconds is None:
+        return delay
+    remaining = max_elapsed_seconds - (time.monotonic() - started_at)
+    return delay if delay <= remaining else None
+
+
 def _is_retryable_http_error(e: Exception) -> bool:
     if isinstance(e, httpx.HTTPStatusError):
         return e.response.status_code in {408, 409, 425, 429, 500, 502, 503, 504, 529}
@@ -89,6 +117,7 @@ def async_retry[T, **P](
     backoff_factor: float = 2.0,
     is_retryable: Callable[[Exception], bool] = _is_retryable_http_error,
     on_retry: RetryObserver | None = None,
+    max_elapsed_seconds: float | None = None,
 ) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
     """Args:
         tries: Number of retry attempts
@@ -97,6 +126,7 @@ def async_retry[T, **P](
         is_retryable: Function to determine if an exception should trigger a retry
                      (defaults to checking for retryable HTTP errors from both urllib and httpx)
         on_retry: Notified before each backoff, so callers can surface the retry
+        max_elapsed_seconds: Stop before a backoff would exceed this total budget
 
     Returns:
         Decorated function with retry logic
@@ -106,15 +136,24 @@ def async_retry[T, **P](
         @functools.wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             last_exc = None
+            started_at = time.monotonic()
             for attempt in range(tries):
                 try:
                     return await func(*args, **kwargs)
                 except Exception as e:
                     last_exc = e
                     if attempt < tries - 1 and is_retryable(e):
-                        current_delay = (delay_seconds * (backoff_factor**attempt)) + (
+                        fallback_delay = (delay_seconds * (backoff_factor**attempt)) + (
                             0.05 * attempt
                         )
+                        current_delay = _delay_within_budget(
+                            e,
+                            fallback_delay,
+                            started_at=started_at,
+                            max_elapsed_seconds=max_elapsed_seconds,
+                        )
+                        if current_delay is None:
+                            raise
                         logger.warning(
                             "Retrying %s after error attempt=%d/%d delay=%.2fs error=%r",
                             func.__qualname__,
@@ -143,6 +182,7 @@ def async_generator_retry[T, **P](
     backoff_factor: float = 2.0,
     is_retryable: Callable[[Exception], bool] = _is_retryable_http_error,
     on_retry: RetryObserver | None = None,
+    max_elapsed_seconds: float | None = None,
 ) -> Callable[[Callable[P, AsyncGenerator[T]]], Callable[P, AsyncGenerator[T]]]:
     """Retry decorator for async generators.
 
@@ -156,6 +196,7 @@ def async_generator_retry[T, **P](
         is_retryable: Function to determine if an exception should trigger a retry
                      (defaults to checking for retryable HTTP errors from both urllib and httpx)
         on_retry: Notified before each backoff, so callers can surface the retry
+        max_elapsed_seconds: Stop before a backoff would exceed this total budget
 
     Returns:
         Decorated async generator function with retry logic
@@ -167,6 +208,7 @@ def async_generator_retry[T, **P](
         @functools.wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> AsyncGenerator[T]:
             last_exc = None
+            started_at = time.monotonic()
             for attempt in range(tries):
                 generator = func(*args, **kwargs)
                 try:
@@ -177,9 +219,17 @@ def async_generator_retry[T, **P](
                     last_exc = e
                     await generator.aclose()
                     if attempt < tries - 1 and is_retryable(e):
-                        current_delay = (delay_seconds * (backoff_factor**attempt)) + (
+                        fallback_delay = (delay_seconds * (backoff_factor**attempt)) + (
                             0.05 * attempt
                         )
+                        current_delay = _delay_within_budget(
+                            e,
+                            fallback_delay,
+                            started_at=started_at,
+                            max_elapsed_seconds=max_elapsed_seconds,
+                        )
+                        if current_delay is None:
+                            raise
                         logger.warning(
                             "Retrying %s after error attempt=%d/%d delay=%.2fs error=%r",
                             func.__qualname__,

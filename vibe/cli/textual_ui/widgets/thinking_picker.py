@@ -62,6 +62,12 @@ class ThinkingPickerApp(Container):
             yield NoMarkupStatic(
                 "Select Thinking Level", classes="thinkingpicker-title"
             )
+            yield NoMarkupStatic(
+                "Controls provider reasoning. Vibe Thinking in /effort separately "
+                "challenges the strategy, explores alternatives, and can pivot before "
+                "the next action. Neither mode guarantees certainty.",
+                classes="thinkingpicker-subtitle",
+            )
             yield NavigableOptionList(*options, id="thinkingpicker-options")
             yield NoMarkupStatic(
                 shortcut_hint(

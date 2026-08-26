@@ -23,11 +23,13 @@ from vibe.app_server.models import (
     ApprovalCallbackDetail,
     CompletedEffectState,
     IdleSessionStatus,
+    MemoryStatusNoticeDetail,
     PublicCallbackEntry,
     PublicEffectEntry,
     PublicEntryGenerationStatus,
     PublicError,
     PublicMessageEntry,
+    PublicNoticeEntry,
     PublicReasoningEntry,
     PublicSession,
     PublicSessionState,
@@ -36,6 +38,7 @@ from vibe.app_server.models import (
 )
 from vibe.app_server.protocol import (
     HistoryEntryAddedParams,
+    HistoryEntryUpdatedParams,
     JsonPatchOperation,
     Notification,
 )
@@ -46,6 +49,7 @@ from vibe.core.types import (
     BaseEvent,
     ImageAttachment,
     InlineImageSource,
+    MemoryStatusEvent,
     ReasoningEvent,
     SessionTitleUpdatedEvent,
     ToolCallEvent,
@@ -380,6 +384,26 @@ def test_streaming_message_is_added_patched_and_frozen() -> None:
         projection.consume(_notification(4, patched[0]))
 
 
+def test_memory_status_is_projected_as_notice_not_model_output() -> None:
+    projector = EventProjector("session-1", "turn-1")
+
+    updates = projector.project(
+        MemoryStatusEvent(
+            status="loaded",
+            message="Memory loaded",
+            fast_entries=2,
+            persistent_entries=3,
+        )
+    )
+
+    assert len(updates) == 1
+    entry = projector.history[0]
+    assert isinstance(entry, PublicNoticeEntry)
+    assert isinstance(entry.detail, MemoryStatusNoticeDetail)
+    assert entry.detail.fast_entries == 2
+    assert entry.detail.persistent_entries == 3
+
+
 def test_in_progress_entry_identity_is_frozen() -> None:
     projector = EventProjector("session-1", "turn-1")
     projector.project(AssistantEvent(content="hello", message_id="message-1"))
@@ -415,6 +439,33 @@ def test_tool_call_completes_streamed_text_before_adding_effect() -> None:
 
     with pytest.raises(ValueError, match="frozen"):
         projector.project(ReasoningEvent(content="late", message_id="reasoning-1"))
+
+
+def test_reasoning_status_text_is_projected_and_updated() -> None:
+    projector = EventProjector("session-1", "turn-1")
+
+    projector.project(
+        ReasoningEvent(
+            content="first\n",
+            message_id="vibe-thinking",
+            status_text="Vibe thinking 1/2",
+        )
+    )
+    updates = projector.project(
+        ReasoningEvent(
+            content="second\n",
+            message_id="vibe-thinking",
+            status_text="Vibe thinking 2/2",
+        )
+    )
+
+    entry = projector.history[0]
+    assert isinstance(entry, PublicReasoningEntry)
+    assert entry.text == "first\nsecond\n"
+    assert entry.status_text == "Vibe thinking 2/2"
+    params = updates[0].params
+    assert isinstance(params, HistoryEntryUpdatedParams)
+    assert any(operation.path == "/statusText" for operation in params.patch)
 
 
 def test_event_sequence_rejects_gaps_and_read_resynchronizes() -> None:

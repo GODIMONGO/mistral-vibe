@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     )
 
 _COMPACTION_PTL_RETRIES = 3
+_COMPACTION_PROFILE_MAX_TOKENS = 4_096
 CompactionFailureReason = Literal["tool_call", "empty_summary"]
 
 
@@ -50,6 +51,7 @@ class CompletionFn(Protocol):
         tools: list[AvailableTool] | None,
         tool_choice: StrToolChoice | AvailableTool | None,
         call_type: TelemetryCallType | None,
+        max_tokens: int | None = None,
     ) -> LLMChunk: ...
 
 
@@ -199,6 +201,7 @@ class CompactionManager:
                     tools=tools,
                     tool_choice=tool_choice,
                     call_type="secondary_call",
+                    max_tokens=_COMPACTION_PROFILE_MAX_TOKENS,
                 )
                 _usage = result.usage
                 log_model_call_success(

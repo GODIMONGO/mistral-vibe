@@ -22,6 +22,7 @@ from vibe.app_server.models import (
     ConfigIssue,
     ConnectorCounts,
     DebugLogPage,
+    HarnessRuntimeView,
     IdentityView,
     MCPState,
     SessionLogSummary,
@@ -201,13 +202,107 @@ class ConfigResource:
                 )
             )
 
+    async def set_autonomy_models(
+        self, *, goal_advisor_model: str, reviewer_model: str
+    ) -> None:
+        response = await self.write(
+            [
+                ConfigWriteOpWire(
+                    op="set",
+                    path="/autonomy/goal_advisor_model",
+                    value=goal_advisor_model,
+                ),
+                ConfigWriteOpWire(
+                    op="set", path="/autonomy/reviewer_model", value=reviewer_model
+                ),
+            ],
+            reason="app-server autonomy model update",
+            reload_runtime=True,
+        )
+        if response.rejected:
+            raise AppServerResponseError(
+                ProtocolError(
+                    code=ProtocolErrorCode.INVALID_PARAMS,
+                    message="Invalid advisor/reviewer model selection",
+                )
+            )
+        if response.failures:
+            raise AppServerResponseError(
+                ProtocolError(
+                    code=ProtocolErrorCode.INTERNAL_ERROR,
+                    message="; ".join(response.failures),
+                )
+            )
+
+    async def set_autonomy_model(self, role: str, alias: str) -> None:
+        if role not in {"advisor", "reviewer"}:
+            raise ValueError(f"Unsupported autonomy model role: {role}")
+        current = self.current.autonomy
+        await self.set_autonomy_models(
+            goal_advisor_model=(
+                alias if role == "advisor" else current.goal_advisor_model
+            ),
+            reviewer_model=(alias if role == "reviewer" else current.reviewer_model),
+        )
+
+    async def configure_opencode_go(self, review_model: str) -> None:
+        active_alias = _escape_json_pointer_token(self.current.active_model.alias)
+        review_alias = _escape_json_pointer_token(review_model)
+        response = await self.write(
+            [
+                ConfigWriteOpWire(
+                    op="set", path="/autonomy/goal_advisor_model", value=review_model
+                ),
+                ConfigWriteOpWire(
+                    op="set", path="/autonomy/reviewer_model", value=review_model
+                ),
+                ConfigWriteOpWire(
+                    op="set", path=f"/models/{active_alias}/thinking", value="medium"
+                ),
+                ConfigWriteOpWire(
+                    op="set", path=f"/models/{review_alias}/thinking", value="max"
+                ),
+                ConfigWriteOpWire(
+                    op="set", path=f"/models/{review_alias}/temperature", value=0.0
+                ),
+            ],
+            reason="app-server OpenCode Go role preset",
+            reload_runtime=True,
+        )
+        if response.rejected:
+            raise AppServerResponseError(
+                ProtocolError(
+                    code=ProtocolErrorCode.INVALID_PARAMS,
+                    message="Invalid OpenCode Go role preset",
+                )
+            )
+        if response.failures:
+            raise AppServerResponseError(
+                ProtocolError(
+                    code=ProtocolErrorCode.INTERNAL_ERROR,
+                    message="; ".join(response.failures),
+                )
+            )
+
     async def set_effort(
         self,
         level: ThinkingLevel,
         max_parallel_subagents: int,
         accuracy: AccuracyLevel,
         web_search_activity: WebSearchActivity,
+        vibe_thinking: ThinkingLevel,
+        gauntlet_loop: bool,
+        boost_mode: bool = False,
+        personal_experience: bool | None = None,
     ) -> None:
+        if boost_mode:
+            level = "max"
+            max_parallel_subagents = MAX_PARALLEL_SUBAGENTS
+            accuracy = "max"
+            web_search_activity = "max"
+            vibe_thinking = "max"
+            gauntlet_loop = True
+            personal_experience = True
         if (
             not MIN_PARALLEL_SUBAGENTS
             <= max_parallel_subagents
@@ -217,6 +312,8 @@ class ConfigResource:
                 "max_parallel_subagents must be between "
                 f"{MIN_PARALLEL_SUBAGENTS} and {MAX_PARALLEL_SUBAGENTS}"
             )
+        if gauntlet_loop and max_parallel_subagents == 0:
+            raise ValueError("gauntlet_loop requires at least one subagent")
         aliases = {
             self.current.active_model.alias,
             self.current.autonomy.goal_advisor_model,
@@ -268,7 +365,31 @@ class ConfigResource:
                 path="/autonomy/web_search_activity",
                 value=web_search_activity,
             ),
+            ConfigWriteOpWire(
+                op="set", path="/autonomy/vibe_thinking", value=vibe_thinking
+            ),
+            ConfigWriteOpWire(
+                op="set", path="/autonomy/gauntlet_loop", value=gauntlet_loop
+            ),
+            ConfigWriteOpWire(op="set", path="/autonomy/boost_mode", value=boost_mode),
         ])
+        if personal_experience is not None:
+            ops.append(
+                ConfigWriteOpWire(
+                    op="set",
+                    path="/autonomy/personal_experience",
+                    value=personal_experience,
+                )
+            )
+        if boost_mode:
+            ops.extend([
+                ConfigWriteOpWire(
+                    op="set", path="/autonomy/require_worker", value=True
+                ),
+                ConfigWriteOpWire(
+                    op="set", path="/autonomy/require_review", value=True
+                ),
+            ])
         response = await self.write(
             ops, reason="app-server effort update", reload_runtime=True
         )
@@ -491,6 +612,10 @@ class RuntimeResource:
     @property
     def mcp(self) -> MCPState:
         return self._state.mcp
+
+    @property
+    def harness(self) -> HarnessRuntimeView:
+        return self._state.harness
 
     @property
     def session_log(self) -> SessionLogSummary:

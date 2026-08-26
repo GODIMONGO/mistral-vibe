@@ -6,6 +6,7 @@ from enum import StrEnum, auto
 from typing import TYPE_CHECKING, Any, Protocol
 
 from vibe.core.agents import AgentProfile
+from vibe.core.execution_budget import ExecutionBudgetTracker
 from vibe.utils import VIBE_WARNING_TAG
 
 if TYPE_CHECKING:
@@ -97,6 +98,22 @@ class TokenLimitMiddleware:
         pass
 
 
+class ExecutionBudgetMiddleware:
+    def __init__(
+        self, tracker_getter: Callable[[], ExecutionBudgetTracker | None]
+    ) -> None:
+        self._tracker_getter = tracker_getter
+
+    async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
+        tracker = self._tracker_getter()
+        if tracker is not None:
+            tracker.check(context.stats.session_total_llm_tokens)
+        return MiddlewareResult()
+
+    def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
+        pass
+
+
 class AutoCompactMiddleware:
     async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
         threshold = context.config.get_active_model().auto_compact_threshold
@@ -110,13 +127,19 @@ class AutoCompactMiddleware:
 
 
 class AutonomyRefreshMiddleware:
-    def __init__(self, turn_interval: int) -> None:
+    def __init__(self, turn_interval: int, threshold_percent: float = 0.9) -> None:
         self.turn_interval = turn_interval
+        self.threshold_percent = threshold_percent
         self._last_refresh_step = 0
 
     async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
         completed_steps = max(0, context.stats.steps - 1)
         if completed_steps - self._last_refresh_step < self.turn_interval:
+            return MiddlewareResult()
+        threshold = context.config.get_active_model().auto_compact_threshold
+        if threshold <= 0:
+            return MiddlewareResult()
+        if context.stats.context_tokens < threshold * self.threshold_percent:
             return MiddlewareResult()
         self._last_refresh_step = completed_steps
         return MiddlewareResult(action=MiddlewareAction.COMPACT)

@@ -46,8 +46,12 @@ def test_experience_deduplicates_actions_and_updates_latest_outcome(
     store = ExperienceStore(tmp_path / "experience.sqlite3")
     project_key = project_experience_key(tmp_path)
     record = ("git_bash", "uv run pyright", "failure", "one type error")
-    store.record_many([record], project_key=project_key)
-    store.record_many(
+    first = store.record_many([record], project_key=project_key)
+    changed = store.record_many(
+        [("git_bash", "uv run pyright", "success", "zero errors")],
+        project_key=project_key,
+    )
+    reinforced = store.record_many(
         [("git_bash", "uv run pyright", "success", "zero errors")],
         project_key=project_key,
     )
@@ -57,7 +61,11 @@ def test_experience_deduplicates_actions_and_updates_latest_outcome(
     assert store.count() == 1
     assert results[0].status == "success"
     assert results[0].outcome == "zero errors"
-    assert results[0].seen_count == 2
+    assert results[0].seen_count == 3
+    assert (first.inserted, first.changed, first.reinforced) == (1, 0, 0)
+    assert (changed.inserted, changed.changed, changed.reinforced) == (0, 1, 0)
+    assert (reinforced.inserted, reinforced.changed, reinforced.reinforced) == (0, 0, 1)
+    assert changed.highlights == ("git_bash success: zero errors",)
 
 
 def test_experience_excludes_unrelated_records_from_same_project(

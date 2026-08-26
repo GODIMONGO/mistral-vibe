@@ -829,7 +829,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._active_vibe_deliberation_message: LLMMessage | None = None
         self._active_experience_message: LLMMessage | None = None
         self._experience_context_fresh: bool = False
-        self._experience_status_reported: bool = False
+        self._reported_experience_fingerprints: frozenset[str] | None = None
+        self._experience_error_reported: bool = False
         self._experience_store = ExperienceStore()
         self._automatic_web_queries: set[str] = set()
         self._vibe_turns_since_full: int = _VIBE_FULL_THINKING_INTERVAL
@@ -2532,7 +2533,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self.messages.append(user_message)
         self._automatic_web_queries.clear()
         self._experience_context_fresh = False
-        self._experience_status_reported = False
         self.stats.steps += 1
         self._current_user_message_id = user_message.message_id
 
@@ -2573,6 +2573,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             content = message.content or ""
             if (
                 not content
+                or message.role is not Role.user
+                or message.injected
                 or message is self._active_experience_message
                 or "<personal_experience>" in content
             ):
@@ -2599,8 +2601,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 project_key=project_key,
             )
         except ExperienceStoreError as exc:
-            if not self._experience_status_reported:
-                self._experience_status_reported = True
+            if not self._experience_error_reported:
+                self._experience_error_reported = True
                 yield MemoryStatusEvent(
                     status="error",
                     message=f"Personal experience could not be searched: {exc}",
@@ -2611,13 +2613,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             message = LLMMessage(role=Role.system, content=rendered, injected=True)
             self.messages.append(message)
             self._active_experience_message = message
-        if not self._experience_status_reported:
-            self._experience_status_reported = True
+        fingerprints = frozenset(entry.fingerprint for entry in entries)
+        selection_changed = fingerprints != self._reported_experience_fingerprints
+        self._reported_experience_fingerprints = fingerprints
+        if entries and selection_changed:
+            successes = sum(entry.status == "success" for entry in entries)
+            failures = sum(entry.status == "failure" for entry in entries)
+            tools = ", ".join(dict.fromkeys(entry.tool for entry in entries))
             yield MemoryStatusEvent(
                 status="experience_loaded",
                 message=(
-                    f"Continual RAG active: consulted {len(entries)} relevant local "
-                    "tool/web outcomes; retrieval repeats before each decision."
+                    f"Experience applied: {len(entries)} relevant observations "
+                    f"({successes} successful, {failures} failed) · {tools}."
                 ),
                 persistent_entries=len(entries),
             )
@@ -2636,7 +2643,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         ):
             return
         try:
-            saved = await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self._experience_store.record_many,
                 records,
                 project_key=project_experience_key(self.cwd),
@@ -2647,13 +2654,21 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 message=f"Personal experience could not be updated: {exc}",
             )
             return
+        if result.learned == 0:
+            return
+        changes = []
+        if result.inserted:
+            changes.append(f"{result.inserted} new")
+        if result.changed:
+            changes.append(f"{result.changed} changed")
+        highlight = f" · {'; '.join(result.highlights)}" if result.highlights else ""
         yield MemoryStatusEvent(
             status="experience_saved",
             message=(
-                f"Continual RAG learned from {saved} verified tool/web outcomes; "
-                "they are available to the next decision."
+                f"Experience learned: {', '.join(changes)} verified "
+                f"observation{'s' if result.learned != 1 else ''}{highlight}."
             ),
-            persistent_entries=saved,
+            persistent_entries=result.learned,
         )
 
     async def _report_global_memory_status(
@@ -4182,7 +4197,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     ) -> AsyncGenerator[BaseEvent]:
         self._pending_working_memory_records.clear()
         self._experience_context_fresh = False
-        self._experience_status_reported = False
         async for event in self._emit_failed_tool_events(resolved.failed_calls):
             yield event
         if not resolved.tool_calls:

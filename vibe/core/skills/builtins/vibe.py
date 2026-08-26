@@ -257,9 +257,13 @@ compaction is intentionally preferred.
 subagent limit, answer accuracy, web-search activity, and personal experience.
 Personal experience is a bounded local SQLite RAG: it retrieves redacted relevant
 code, test, advisor/reviewer, and web-search outcomes before every root decision
-and updates them once per tool batch. Retrieval requires lexical or related-stem
-relevance, then prioritizes the current project and repeated experience. It adapts
-harness context rather than model weights and uses no embedding/API call.
+and updates them once per tool batch. Retrieval uses the objective and recent user
+requests rather than fresh tool chatter, requires lexical or related-stem relevance,
+then prioritizes the current project and repeated experience. New actions and changed
+outcomes are reported as learning; identical repetitions only reinforce confidence
+and do not emit another learned notice. The applied notice changes only when the
+retrieved fingerprint set changes. It adapts harness context rather than model weights
+and uses no embedding/API call.
 Vibe thinking is a
 harness-level preflight layer: `off|low|medium|high|max` runs `0|1|2|3|4` rigorous
 independent deliberation calls and passes the refined brief to the main agent.
